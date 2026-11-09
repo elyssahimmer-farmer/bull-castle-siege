@@ -1,0 +1,944 @@
+// castle.js: the Bull castle (DESIGN.md 1, 2, 5, 7, 9; research.md 3 and 6b). Built on Bodiam (licence of 1385): a
+// square sandstone castle with no keep, round corner towers, square mid-towers in the east and west walls, a
+// twin-towered gatehouse with a corbelled, machicolated and crenellated parapet, three keyhole gunloops at its foot
+// (shapes only), a portcullis, a barbican on its own island, a postern tower with a long timber bridge, and the
+// domestic ranges round an open courtyard. Lancet windows only (Bodiam has no arrow slits). Turned so the gate faces
+// south (ours, DESIGN 2). Every measurement comes from ctx.SIEGE.
+//
+// Moving parts, all pure functions of the cycle:
+//   the breakable battlement on the south-west tower: its merlons burst outward at SIEGE.times.breakAt (58), tumble and
+//   splash at breachSplash (59.7) with a dust puff, leave a ragged stump, and rise back into place under the full night
+//   mist (165-172) so the loop starts whole (research 6b: "They overthrow the battlements around," Langtoft);
+//   the portcullis: half up, it drops at the alarm (96) and is wound up again under the mist (166-172);
+//   the postern gate: opens at 99 for the sally, shuts at 157 after the knights are home;
+//   the Bull banner over the gatehouse and the pennons on the towers stir in the wind (a tap on the castle or the
+//   gatehouse lifts them in a gust); torches on the walls glow at night (ctx.addLantern).
+//
+// For the choreographers: ctx.castle (also window.CASTLE) publishes the standing heights and every crenel's standing
+// spot ({ x, y, z, face, where }), the lady's and the damsel's places, and the merlons (for arrows to stick in).
+(function () {
+  'use strict';
+  const TAU = Math.PI * 2;
+
+  // state shared by init and update
+  let S, T, C3, G;                         // SIEGE, SIEGE.times, THREE, misc
+  let pieces = [], piecesMesh = null, chipsN = 0;
+  let dustMesh = null, splashMesh = null, dust = [], splashes = [];
+  let portcullis = null, leaves = null, flames = null, flameSpots = [];
+  let flagMat = null, flagU = null, tapAt = -1e9;
+  const M4 = [], Q = [], V = [];
+
+  window.Scene.register({
+    name: 'castle',
+    init(ctx) {
+      const THREE = ctx.THREE;
+      C3 = THREE; S = ctx.SIEGE; T = S.times;
+      const lin = ctx.lin, hash = ctx.hash, smooth01 = ctx.smooth01;
+      const rnd = ctx.mulberry32(13851021);            // our own seed (the licence to crenellate, 1385)
+      const rr = (a, b) => a + (b - a) * rnd();
+      for (let i = 0; i < 4; i++) { M4.push(new THREE.Matrix4()); Q.push(new THREE.Quaternion()); V.push(new THREE.Vector3()); }
+
+      // ---------- colours (sRGB picked, linear through ctx.lin) ----------
+      const SAND = lin(ctx.C.sandstone), CAP = lin(0xe2d3a8), SHADE = lin(ctx.C.sandShade);
+      const DARK = lin(0x2a231d), DEEP = lin(0x1d1915), LEAD = lin(0x8b9197), OAK = lin(ctx.C.oak), OAK_L = lin(0x96714a);
+      const IRON = lin(0x4a4846), RED = lin(ctx.C.bullRed), WHITE = lin(ctx.C.bullWhite), GOLD = lin(ctx.C.hornGold);
+      const POLE = lin(0x6a4c30);
+      const M = ctx.mat(0xffffff, { vertexColors: true });
+
+      // ---------- geometry: triangles straight into arrays, coloured per vertex ----------
+      let P = [], CL = [];
+      const tc = new THREE.Color();
+      function begin() { P = []; CL = []; }
+      function end() {
+        const g = new THREE.BufferGeometry();
+        g.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+        g.setAttribute('color', new THREE.Float32BufferAttribute(CL, 3));
+        g.computeVertexNormals();
+        g.computeBoundingSphere();
+        return g;
+      }
+      function pushV(p, c) { P.push(p[0], p[1], p[2]); CL.push(c[0], c[1], c[2]); }
+      // a triangle turned to face n (any winding in)
+      function tri(a, b, c, ca, cb, cc, n) {
+        const ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+        const nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        if (nx * n[0] + ny * n[1] + nz * n[2] < 0) { pushV(a, ca); pushV(c, cc); pushV(b, cb); } else { pushV(a, ca); pushV(b, cb); pushV(c, cc); }
+      }
+      // shade baked toward the ground, a damp band at the water
+      function shadeY(y) { return y >= 0 ? 0.74 + 0.26 * smooth01(y / 11) : 0.74 - 0.16 * smooth01(-y / 2.2); }
+      function colAt(base, y, m, flat) {
+        tc.copy(base).multiplyScalar(m * (flat ? 1 : shadeY(y)));
+        if (!flat && y < 0.2) { const w = smooth01((0.2 - y) / 0.7); tc.r *= 1 - 0.2 * w; tc.g *= 1 - 0.1 * w; tc.b *= 1 - 0.24 * w; }
+        return [tc.r, tc.g, tc.b];
+      }
+      // a convex polygon (fan from its first point) facing n
+      function poly(pts, n, base, m, flat) {
+        const cs = pts.map((p) => colAt(base, p[1], m, flat));
+        for (let i = 1; i < pts.length - 1; i++) tri(pts[0], pts[i], pts[i + 1], cs[0], cs[i], cs[i + 1], n);
+      }
+      // stone courses: alternating bands with a little variety, every CH metres (absolute heights, so walls line up)
+      const CH = 0.9;
+      const course = (k, seed) => 1 + ((k & 1) ? -0.035 : 0.03) + 0.06 * (hash(k, seed, 3, 7) - 0.5);
+      // a vertical face from A to B ([x, z]) between y0 and y1, facing n ([nx, 0, nz]); o: { c, m, bands, seed, bandFn, flat }
+      function wall(A, B, y0, y1, n, o) {
+        const base = o.c || SAND, m = o.m === undefined ? 1 : o.m;
+        const ys = [y0];
+        if (o.bands !== false) for (let k = Math.floor(y0 / CH) + 1; k * CH < y1 - 0.05; k++) if (k * CH > y0 + 0.05) ys.push(k * CH);
+        if (o.cuts) for (const c of o.cuts) if (c > y0 + 0.02 && c < y1 - 0.02) ys.push(c);
+        ys.sort((a, b) => a - b);
+        ys.push(y1);
+        for (let i = 0; i < ys.length - 1; i++) {
+          const ya = ys[i], yb = ys[i + 1], ym = (ya + yb) / 2;
+          let bm = o.bands === false ? 1 : course(Math.floor(ym / CH), o.seed || 1);
+          if (o.bandFn) bm *= o.bandFn(ym);
+          if (o.fmY) bm *= o.fmY(ym);
+          const a = [A[0], ya, A[1]], b = [B[0], ya, B[1]], c = [B[0], yb, B[1]], d = [A[0], yb, A[1]];
+          const ca = colAt(base, ya, m * bm, o.flat), cd = colAt(base, yb, m * bm, o.flat);
+          tri(a, b, c, ca, ca, cd, n); tri(a, c, d, ca, cd, cd, n);
+        }
+      }
+      // a prism over a convex polygon [[x, z], ...] from y0 to y1. o: { c, m, top (colour), topM, under (mult), fm(nx, nz) side mult, noTop, bands, seed }
+      function prism(pts, y0, y1, o) {
+        o = o || {};
+        let cx = 0, cz = 0;
+        for (const p of pts) { cx += p[0]; cz += p[1]; }
+        cx /= pts.length; cz /= pts.length;
+        for (let i = 0; i < pts.length; i++) {
+          const A = pts[i], B = pts[(i + 1) % pts.length];
+          let nx = -(B[1] - A[1]), nz = B[0] - A[0];
+          const l = Math.hypot(nx, nz) || 1; nx /= l; nz /= l;
+          if (nx * ((A[0] + B[0]) / 2 - cx) + nz * ((A[1] + B[1]) / 2 - cz) < 0) { nx = -nx; nz = -nz; }
+          const fnx = nx, fnz = nz;
+          wall(A, B, y0, y1, [nx, 0, nz], Object.assign({}, o, { fmY: o.fm ? (ym) => o.fm(fnx, fnz, ym) : null }));
+        }
+        if (!o.noTop) poly(pts.map((p) => [p[0], y1, p[1]]), [0, 1, 0], o.top || o.c || SAND, (o.topM || 1.06) * (o.m === undefined ? 1 : o.m), o.flat);
+        if (o.under) poly(pts.map((p) => [p[0], y0, p[1]]), [0, -1, 0], o.c || SAND, o.under, true);
+      }
+      const box = (x0, x1, y0, y1, z0, z1, o) => prism([[x0, z0], [x1, z0], [x1, z1], [x0, z1]], y0, y1, o);
+      // an oriented box: centre (cx, cz), yaw (its local +z points along (sin yaw, cos yaw)), half-sizes hw (local x), hd (local z)
+      function oboxPts(cx, cz, yaw, hw, hd) {
+        const rx = Math.cos(yaw), rz = -Math.sin(yaw), fx = Math.sin(yaw), fz = Math.cos(yaw);
+        return [[-hw, hd], [hw, hd], [hw, -hd], [-hw, -hd]].map(([a, b]) => [cx + rx * a + fx * b, cz + rz * a + fz * b]);
+      }
+      const obox = (cx, cz, yaw, hw, hd, y0, y1, o) => prism(oboxPts(cx, cz, yaw, hw, hd), y0, y1, o);
+      function ngonPts(cx, cz, rv, n, phase) { const out = []; for (let i = 0; i < n; i++) { const a = phase + i * TAU / n; out.push([cx + Math.sin(a) * rv, cz + Math.cos(a) * rv]); } return out; }
+      // a sloping ring (a plinth's batter): radius r0 at y0 to r1 at y1
+      function frustum(cx, cz, r0, r1, y0, y1, n, phase, base, m) {
+        for (let i = 0; i < n; i++) {
+          const a = phase + i * TAU / n, b = phase + (i + 1) * TAU / n, am = (a + b) / 2;
+          const p = [cx + Math.sin(a) * r0, y0, cz + Math.cos(a) * r0], q = [cx + Math.sin(b) * r0, y0, cz + Math.cos(b) * r0];
+          const r = [cx + Math.sin(b) * r1, y1, cz + Math.cos(b) * r1], s = [cx + Math.sin(a) * r1, y1, cz + Math.cos(a) * r1];
+          const n3 = [Math.sin(am), (r0 - r1) / Math.max(0.01, y1 - y0), Math.cos(am)];
+          const c0 = colAt(base, y0, m), c1 = colAt(base, y1, m);
+          tri(p, q, r, c0, c0, c1, n3); tri(p, r, s, c0, c1, c1, n3);
+        }
+      }
+      // a flat shape on a wall: centre (cx, cy, cz) on the face, facing (nx, nz); shape in (right, up) metres; off: lift off the face
+      function decal(cx, cy, cz, nx, nz, shape, base, m, off) {
+        const ux = nz, uz = -nx;
+        const pts = shape.map(([a, b]) => [cx + ux * a + nx * off, cy + b, cz + uz * a + nz * off]);
+        poly(pts, [nx, 0, nz], base, m, true);
+      }
+      const lancetShape = (w, h) => [[-w / 2, 0], [w / 2, 0], [w / 2, h - w * 0.75], [0, h], [-w / 2, h - w * 0.75]];
+      // a lancet window: a pale drafted frame and a dark opening (dark recesses do the work)
+      function lancet(cx, cy, cz, nx, nz, w, h) {
+        decal(cx, cy - 0.12, cz, nx, nz, lancetShape(w + 0.24, h + 0.26), CAP, 1.02, 0.025);
+        decal(cx, cy, cz, nx, nz, lancetShape(w, h), DARK, 1, 0.05);
+      }
+      function squareWin(cx, cy, cz, nx, nz, w, h) {
+        decal(cx, cy - 0.1, cz, nx, nz, [[-w / 2 - 0.1, 0], [w / 2 + 0.1, 0], [w / 2 + 0.1, h + 0.2], [-w / 2 - 0.1, h + 0.2]], CAP, 1.02, 0.025);
+        decal(cx, cy, cz, nx, nz, [[-w / 2, 0], [w / 2, 0], [w / 2, h], [-w / 2, h]], DARK, 1, 0.05);
+      }
+      // a two-light hall window: two lancets under one pointed head, a stone mullion between
+      function hallWindow(cx, cy, cz, nx, nz, w, h) {
+        decal(cx, cy - 0.15, cz, nx, nz, lancetShape(w + 0.3, h + 0.35), CAP, 1.02, 0.025);
+        decal(cx, cy, cz, nx, nz, lancetShape(w, h), DARK, 1, 0.05);
+        decal(cx, cy, cz, nx, nz, [[-0.08, 0], [0.08, 0], [0.08, h - w * 0.55], [-0.08, h - w * 0.55]], CAP, 0.95, 0.075);
+        decal(cx, cy + h * 0.55, cz, nx, nz, [[-w / 2, 0], [w / 2, 0], [w / 2, 0.12], [-w / 2, 0.12]], CAP, 0.95, 0.075);
+      }
+      // a keyhole gunloop (Bodiam's gatehouse: "for hand-held cannons"), as a shape only
+      function gunloop(cx, cy, cz, nx, nz) {
+        decal(cx, cy - 0.1, cz, nx, nz, [[-0.42, 0], [0.42, 0], [0.42, 1.55], [-0.42, 1.55]], CAP, 1.04, 0.025);
+        const circ = []; for (let i = 0; i < 8; i++) { const a = i * TAU / 8; circ.push([Math.sin(a) * 0.24, 0.3 + Math.cos(a) * 0.24]); }
+        decal(cx, cy, cz, nx, nz, circ, DEEP, 1, 0.05);
+        decal(cx, cy, cz, nx, nz, [[-0.07, 0.3], [0.07, 0.3], [0.07, 1.3], [-0.07, 1.3]], DEEP, 1, 0.05);
+        decal(cx, cy, cz, nx, nz, [[-0.26, 0.98], [0.26, 0.98], [0.26, 1.06], [-0.26, 1.06]], DEEP, 1, 0.05);
+      }
+      // a shield of arms on a wall: the Bull (gules, a bull passant argent, armed or), boiled down to a few blocks
+      function shield(cx, cy, cz, nx, nz, s) {
+        decal(cx, cy, cz, nx, nz, [[-0.5 * s, 1.1 * s], [0.5 * s, 1.1 * s], [0.5 * s, 0.5 * s], [0, 0], [-0.5 * s, 0.5 * s]].map(([a, b]) => [a * 1.15, b * 1.1 - 0.06 * s]), CAP, 1.05, 0.03);
+        decal(cx, cy, cz, nx, nz, [[-0.5 * s, 1.1 * s], [0.5 * s, 1.1 * s], [0.5 * s, 0.5 * s], [0, 0], [-0.5 * s, 0.5 * s]], RED, 1, 0.05);
+        decal(cx, cy, cz, nx, nz, [[-0.22 * s, 0.5 * s], [0.3 * s, 0.5 * s], [0.3 * s, 0.75 * s], [-0.22 * s, 0.78 * s]], WHITE, 1, 0.07);    // the body
+        decal(cx, cy, cz, nx, nz, [[-0.36 * s, 0.6 * s], [-0.2 * s, 0.6 * s], [-0.2 * s, 0.82 * s], [-0.36 * s, 0.8 * s]], WHITE, 1, 0.07);  // the head
+        decal(cx, cy, cz, nx, nz, [[-0.2 * s, 0.36 * s], [-0.1 * s, 0.36 * s], [-0.1 * s, 0.5 * s], [-0.2 * s, 0.5 * s]], WHITE, 1, 0.07);   // legs
+        decal(cx, cy, cz, nx, nz, [[0.16 * s, 0.36 * s], [0.26 * s, 0.36 * s], [0.26 * s, 0.5 * s], [0.16 * s, 0.5 * s]], WHITE, 1, 0.07);
+        decal(cx, cy, cz, nx, nz, [[-0.36 * s, 0.8 * s], [-0.3 * s, 0.8 * s], [-0.36 * s, 0.94 * s], [-0.42 * s, 0.93 * s]], GOLD, 1, 0.09); // a horn
+      }
+      // a pointed (two-centred) arch in a passage mouth: the two spandrels between the curve and the vault, as solid
+      // stone `depth` deep. The passage runs along z; zf is the face, dir +1 or -1 the way into the passage.
+      function archZ(cx, zf, dir, hw, vault, depth) {
+        const c = 0.5 * hw, r = hw + c, rise = Math.sqrt(r * r - c * c), spring = vault - rise;
+        const phiMax = Math.acos(c / r), N = 5;
+        for (const side of [-1, 1]) {
+          const curve = [];
+          for (let i = 0; i <= N; i++) { const ph = phiMax * i / N; curve.push([side * (c - r * Math.cos(ph)) * -1, spring + r * Math.sin(ph)]); }
+          // curve runs from the springing (x = side*hw) up to the apex (x = 0)
+          const corner = [side * hw, vault];
+          const pts2 = [corner].concat(curve);
+          const z0 = zf, z1 = zf + dir * depth;
+          poly(pts2.map(([x, y]) => [cx + x, y, z0]), [0, 0, -dir], SAND, 1, false);
+          poly(pts2.map(([x, y]) => [cx + x, y, z1]), [0, 0, dir], SAND, 0.5, false);
+          for (let i = 0; i < curve.length - 1; i++) {
+            const a = curve[i], b = curve[i + 1];
+            const nn = [-side * 0.5, -1, 0];
+            const p0 = [cx + a[0], a[1], z0], p1 = [cx + b[0], b[1], z0], p2 = [cx + b[0], b[1], z1], p3 = [cx + a[0], a[1], z1];
+            const ca = colAt(SAND, a[1], 0.62), cb = colAt(SAND, b[1], 0.62);
+            tri(p0, p1, p2, ca, cb, cb, nn); tri(p0, p2, p3, ca, cb, ca, nn);
+          }
+        }
+        return spring;
+      }
+
+      // ================= the castle =================
+      begin();
+      const BED = S.moat.bed, WALK = S.curtain.h, SILL = 0.6, MER = S.curtain.merlon, PT = 0.55, CW = 0.9, PITCH = 2.1;
+      const CU = S.curtain, half = CU.thick / 2;
+      const merlons = [], crenels = [];
+      // a crenellated parapet whose outer face runs from A to B ([x, z]) facing n ([nx, nz]); crenel centres as distances
+      // along A→B (or 'auto'); floor: the walk it stands on. Records standing spots behind each crenel.
+      function parapet(A, B, n, floor, cren, where, o) {
+        o = o || {};
+        const L = Math.hypot(B[0] - A[0], B[1] - A[1]), tx = (B[0] - A[0]) / L, tz = (B[1] - A[1]) / L;
+        const at = (s, d) => [A[0] + tx * s - n[0] * d, A[1] + tz * s - n[1] * d];
+        if (cren === 'auto') {
+          // symmetric about the middle; whichever phase leaves end merlons nearest 1.3 m
+          let best = null;
+          for (const ph of [0, 0.5]) {
+            const list = [];
+            for (let k = -10; k <= 10; k++) { const s = L / 2 + (k + ph) * PITCH; if (s - CW / 2 >= 0.85 && s + CW / 2 <= L - 0.85) list.push(s); }
+            if (!list.length) continue;
+            const endM = list[0] - CW / 2, score = Math.abs(endM - 1.3);
+            if (!best || score < best.score) best = { list, score };
+          }
+          cren = best ? best.list : [];
+        }
+        if (!o.noSill) prism([at(0, 0), at(L, 0), at(L, PT), at(0, PT)], floor, floor + SILL, { c: CAP, m: 0.97, bands: false, topM: 1.05 });
+        let s0 = 0;
+        const segs = [];
+        for (const s of cren.concat([L + CW / 2])) { const a = s0, b = s - CW / 2; if (b - a > 0.05) segs.push([a, b]); s0 = s + CW / 2; }
+        for (const [a, b] of segs) {
+          if (!o.noMerlons) prism([at(a, 0), at(b, 0), at(b, PT), at(a, PT)], floor + SILL, floor + MER, { c: CAP, m: 1, bands: false, topM: 1.1 });
+          const mid = at((a + b) / 2, PT / 2);
+          merlons.push({ x: mid[0], y: floor + SILL, z: mid[1], top: floor + MER, w: b - a, face: Math.atan2(n[0], n[1]), where });
+        }
+        for (const s of cren) { const p = at(s, PT + 0.5); crenels.push({ x: +p[0].toFixed(2), y: floor, z: +p[1].toFixed(2), face: +Math.atan2(n[0], n[1]).toFixed(3), where }); }
+      }
+
+      // ---- the curtain walls (centre lines x ±18, z -12 and -48; 1.8 thick; wall-walk y 10) ----
+      const zS = CU.zS, zN = CU.zN, X = CU.x;
+      const SO = zS + half, NO = zN - half, EO = X + half;            // outer faces: z -11.1, z -48.9, x 18.9
+      const TR = S.towerR, RV = TR + 0.1, AP = RV * Math.cos(Math.PI / 12);   // the towers: 12 sides, vertex radius 4.6, apothem 4.44
+      const towerEdge = (dz) => X - Math.sqrt(AP * AP - dz * dz);         // where a curtain face meets a tower (approx.)
+      const GH = S.gatehouse, PO = S.postern, BA = S.barbican;
+      // south: either side of the gatehouse; north: either side of the postern
+      for (const sx of [-1, 1]) {
+        box(Math.min(sx * GH.x1, sx * X), Math.max(sx * GH.x1, sx * X), BED, WALK, zS - half, zS + half, { seed: 11 });
+        box(Math.min(sx * PO.x1, sx * X), Math.max(sx * PO.x1, sx * X), BED, WALK, zN - half, zN + half, { seed: 12 });
+        box(sx * X - half, sx * X + half, BED, WALK, zN, zS, { seed: 13 });
+      }
+      // a drip course just under the parapet, all round the outer faces
+      const DRIP = (x0, x1, z0, z1) => box(x0, x1, WALK - 0.45, WALK - 0.2, z0, z1, { c: CAP, bands: false, m: 0.98 });
+      for (const sx of [-1, 1]) {
+        DRIP(Math.min(sx * GH.x1, sx * 14.5), Math.max(sx * GH.x1, sx * 14.5), SO - 0.05, SO + 0.12);
+        DRIP(Math.min(sx * PO.x1, sx * 14.5), Math.max(sx * PO.x1, sx * 14.5), NO - 0.12, NO + 0.05);
+        DRIP(sx > 0 ? EO - 0.05 : -EO - 0.12, sx > 0 ? EO + 0.12 : -EO + 0.05, -43.5, -16.5);
+      }
+      // parapets: south (explicit crenels so the curtain gun at x 11.5 and the damsel above the T2 hit have one)
+      {
+        const eS = towerEdge(SO - zS + PT / 2);
+        // east run from the gatehouse (x 6) to the tower; crenels at x 7.3, 9.4, 11.5
+        parapet([GH.x1, SO], [eS + 0.3, SO], [0, 1], WALK, [7.3, 9.4, 11.5].map((x) => x - GH.x1), 'curtainS');
+        parapet([-(eS + 0.3), SO], [-GH.x1, SO], [0, 1], WALK, [-11.5, -9.4, -7.3].map((x) => x + eS + 0.3), 'curtainS');
+        parapet([PO.x1, NO], [eS + 0.3, NO], [0, -1], WALK, 'auto', 'curtainN');
+        parapet([-(eS + 0.3), NO], [-PO.x1, NO], [0, -1], WALK, 'auto', 'curtainN');
+        const MT = S.midTowers, mz0 = -30 - S.midHz, mz1 = -30 + S.midHz, tz = zS - Math.sqrt(AP * AP - (EO - X - PT / 2) ** 2) + 0.3;
+        for (const sx of [-1, 1]) {
+          parapet([sx * EO, tz], [sx * EO, mz1], [sx, 0], WALK, 'auto', sx > 0 ? 'curtainE' : 'curtainW');
+          parapet([sx * EO, mz0], [sx * EO, zN + (zS - tz)], [sx, 0], WALK, 'auto', sx > 0 ? 'curtainE' : 'curtainW');
+        }
+        void MT;
+      }
+      // lancet windows in the curtain (two storeys over basements, research 3), and small lower lights
+      for (const sx of [-1, 1]) {
+        for (const x of [8.6, 12.0]) { lancet(sx * x, 5.4, SO, 0, 1, 0.55, 1.7); squareWin(sx * x, 2.1, SO, 0, 1, 0.45, 0.6); }
+        for (const x of [6.0, 10.0]) { lancet(sx * x, 5.4, NO, 0, -1, 0.55, 1.7); squareWin(sx * x, 2.1, NO, 0, -1, 0.45, 0.6); }
+        for (const z of [-20.5, -24.5, -35.5, -39.5]) { lancet(sx * EO, 5.4, z, sx, 0, 0.55, 1.7); squareWin(sx * EO, 2.1, z, sx, 0, 0.45, 0.6); }
+      }
+
+      // ---- the four round corner towers: 12 sides (a side's middle faces due south), battlements at 14 ----
+      const TH = S.towerH, BR = S.breach, breachTower = 'SW';
+      const towerTops = {};
+      for (const [name, [cx, cz]] of Object.entries(S.towers)) {
+        const pts = ngonPts(cx, cz, RV, 12, Math.PI / 12);
+        prism(pts, BED, TH, { seed: 20 + cx + cz });
+        frustum(cx, cz, RV + 0.45, RV + 0.45, BED, 0.3, 12, Math.PI / 12, SAND, 0.95);       // the plinth in the water
+        frustum(cx, cz, RV + 0.45, RV, 0.3, 1.0, 12, Math.PI / 12, SAND, 0.98);
+        frustum(cx, cz, RV + 0.14, RV + 0.14, TH - 0.55, TH - 0.25, 12, Math.PI / 12, CAP, 1.0);   // a string course
+        const out = Math.atan2(cx - 0, cz + 30);                     // away from the courtyard
+        const inward = out + Math.PI;
+        // the stair turret on the courtyard side, rising a metre over the parapet
+        const tx = cx + Math.sin(inward) * 2.85, tzz = cz + Math.cos(inward) * 2.85;
+        prism(ngonPts(tx, tzz, 1.3, 8, Math.PI / 8), TH - 1, TH + 1.6, { seed: 31 });
+        for (let k = 0; k < 4; k++) { const a = inward + k * Math.PI / 2; obox(tx + Math.sin(a) * 0.98, tzz + Math.cos(a) * 0.98, a, 0.42, 0.22, TH + 1.6, TH + 2.15, { c: CAP, bands: false, topM: 1.1 }); }
+        towerTops[name] = { cx, cz, turret: [tx, tzz], poleTop: TH + 2.15 };
+        // parapet: per side a sill and a merlon in the middle of the side; crenels at the corners
+        const sideLen = 2 * RV * Math.sin(Math.PI / 12);
+        for (let k = 0; k < 12; k++) {
+          const th = k * TAU / 12;
+          let dth = th - BR.face; dth = Math.atan2(Math.sin(dth), Math.cos(dth));
+          const inBreach = name === breachTower && Math.abs(dth) < BR.arc;
+          const mx = cx + Math.sin(th) * (AP - PT / 2), mz = cz + Math.cos(th) * (AP - PT / 2);
+          if (inBreach) {
+            // the stump: a few ragged teeth of the parapet that stay when the battlement is knocked off
+            for (let j = 0; j < 4; j++) {
+              const off = (j - 1.5) * 0.62 + 0.12 * (hash(k, j, 2, 2) - 0.5), h = 0.08 + 0.42 * hash(k, j, 5, 1), w = 0.2 + 0.1 * hash(k, j, 7, 3);
+              obox(mx + Math.cos(th) * off, mz - Math.sin(th) * off, th + 0.15 * (hash(k, j, 1, 9) - 0.5), w, PT / 2 - 0.05, TH, TH + h, { c: CAP, bands: false, m: 0.86, topM: 1.12 });
+            }
+            continue;
+          }
+          obox(mx, mz, th, sideLen / 2 + 0.16, PT / 2, TH, TH + SILL, { c: CAP, bands: false, m: 0.97, topM: 1.05 });
+          obox(mx, mz, th, 0.7, PT / 2, TH + SILL, TH + MER, { c: CAP, bands: false, topM: 1.1 });
+          merlons.push({ x: mx, y: TH + SILL, z: mz, top: TH + MER, w: 1.4, face: th, where: 'tower' + name });
+        }
+        // crenels at the corners, except where the turret stands
+        for (let k = 0; k < 12; k++) {
+          const a = Math.PI / 12 + k * TAU / 12;
+          let d = Math.atan2(Math.sin(a - inward), Math.cos(a - inward));
+          if (Math.abs(d) < 0.75) continue;
+          let db = Math.atan2(Math.sin(a - BR.face), Math.cos(a - BR.face));
+          crenels.push({ x: +(cx + Math.sin(a) * 3.3).toFixed(2), y: TH, z: +(cz + Math.cos(a) * 3.3).toFixed(2), face: +Math.atan2(Math.sin(a), Math.cos(a)).toFixed(3), where: 'tower' + name, breach: name === breachTower && Math.abs(db) < BR.arc + 0.3 ? true : undefined });
+        }
+        // lancets on the sides facing out of the castle; doors where the wall-walks come in
+        for (let k = 0; k < 12; k++) {
+          const th = k * TAU / 12;
+          const d = Math.abs(Math.atan2(Math.sin(th - out), Math.cos(th - out)));
+          const fx = cx + Math.sin(th) * AP, fz = cz + Math.cos(th) * AP;
+          if (d < 1.4) {
+            lancet(fx, 6.6, fz, Math.sin(th), Math.cos(th), 0.55, 1.7);
+            if (k % 2 === 0) lancet(fx, 10.3, fz, Math.sin(th), Math.cos(th), 0.5, 1.5);
+            else squareWin(fx, 2.6, fz, Math.sin(th), Math.cos(th), 0.4, 0.55);
+          }
+        }
+        // the wall-walk doors into the tower (east-west wall and north-south wall)
+        const sxw = -Math.sign(cx), szw = -Math.sign(cz + 30);
+        const doorShape = [[-0.4, 0], [0.4, 0], [0.4, 1.5], [0, 1.85], [-0.4, 1.5]];
+        decal(cx + sxw * AP, WALK, cz + (cz > -30 ? -PT / 2 : PT / 2), sxw, 0, doorShape, DARK, 1, 0.04);    // from the north or south wall
+        decal(cx + (cx > 0 ? -PT / 2 : PT / 2), WALK, cz + szw * AP, 0, szw, doorShape, DARK, 1, 0.04);    // from the east or west wall
+      }
+
+      // ---- the square mid-towers in the east and west walls, 13 high ----
+      const MH = S.midTowerH;
+      for (const [name, [cx, cz]] of Object.entries(S.midTowers)) {
+        const sx = Math.sign(cx), x0 = cx - S.midHx, x1 = cx + S.midHx, z0 = cz - S.midHz, z1 = cz + S.midHz;
+        box(x0, x1, BED, MH, z0, z1, { seed: 40 });
+        box(x0 - 0.35, x1 + 0.35, BED, 0.3, z0 - 0.35, z1 + 0.35, { m: 0.95, topM: 1 });
+        box(x0 - 0.12, x1 + 0.12, MH - 0.55, MH - 0.25, z0 - 0.12, z1 + 0.12, { c: CAP, bands: false });
+        const xo = sx > 0 ? x1 : x0;
+        parapet([xo, z0], [xo, z1], [sx, 0], MH, 'auto', 'mid' + name);
+        parapet([x0, z1], [x1, z1], [0, 1], MH, 'auto', 'mid' + name);
+        parapet([x0, z0], [x1, z0], [0, -1], MH, 'auto', 'mid' + name);
+        const xi = sx > 0 ? x0 : x1;
+        parapet([xi, z0], [xi, z1], [-sx, 0], MH, [], 'mid' + name, {});
+        lancet(xo, 6.4, cz, sx, 0, 0.6, 1.8); lancet(xo, 9.9, cz, sx, 0, 0.5, 1.5); squareWin(xo, 2.6, cz, sx, 0, 0.45, 0.6);
+        for (const zf of [z0, z1]) lancet(cx + sx * 1.0, 8.0, zf, 0, Math.sign(zf - cz), 0.5, 1.5);
+        // wall-walk doors
+        for (const zf of [z0, z1]) decal(sx * (X - 0.27), WALK, zf, 0, Math.sign(zf - cz), [[-0.38, 0], [0.38, 0], [0.38, 1.45], [0, 1.8], [-0.38, 1.45]], DARK, 1, 0.04);
+      }
+
+      // ---- the gatehouse: twin towers either side of the vaulted passage, a machicolated parapet across the front ----
+      const GV = GH.vault, GP = GH.passage / 2, GT = GH.h, GF = GH.z1, GR = GF - 1.2;   // the towers' fronts at z -7, the arch set back 1.2 between them
+      // a face turned into a passage is dark (deeper toward the vault), up to the vault
+      const passDark = (vault) => (nx, side, ym) => (Math.abs(nx) > 0.9 && Math.sign(nx) === -side && ym < vault + 0.05 ? 0.42 + 0.1 * (1 - ym / vault) : 1);
+      const inPass = passDark(GV);
+      for (const sx of [-1, 1]) {
+        box(Math.min(sx * GP, sx * GH.x1), Math.max(sx * GP, sx * GH.x1), BED, GT, GH.z0, GF, { seed: 50, fm: (nx, nz, ym) => inPass(nx, sx, ym) });
+        box(Math.min(sx * (GH.x1 + 0.3), sx * GP), Math.max(sx * (GH.x1 + 0.3), sx * GP), -1, 0.35, GF - 0.05, GF + 0.3, { m: 0.92, topM: 1 });  // a plinth on the apron
+      }
+      box(-GP, GP, GV, GT, GH.z0, GR, { seed: 51, under: 0.3 });              // over the passage (the vault)
+      const gSpring = archZ(0, GR, -1, GP, GV, 0.6);
+      // the machicolations: corbels across the front, and the parapet jutting out on them (stones dropped between)
+      const MZ0 = GF, MZ1 = GF + 0.7, MY0 = GT - 1.25;
+      for (let i = 0; i <= 12; i++) {
+        const x = -5.75 + i * (11.5 / 12);
+        const zb = Math.abs(x) < GP + 0.2 ? GF - 0.2 : GF;
+        box(x - 0.2, x + 0.2, MY0 - 0.85, MY0, zb, MZ1 - 0.05, { c: CAP, bands: false, m: 0.95, under: 0.7 });
+      }
+      box(-GH.x1 - 0.1, GH.x1 + 0.1, MY0, GT + SILL, MZ1 - 0.75, MZ1, { c: CAP, bands: false, m: 0.98, under: 0.34, topM: 1.05 });
+      box(-GP, GP, GT - 0.5, GT, GR, MZ1 - 0.74, { c: CAP, bands: false, under: 0.35, topM: 1.0 });   // the floor over the recess
+      // its merlons: crenels over the gate and at the two Bull guns (x ±3.8)
+      parapet([-GH.x1 - 0.1, MZ1], [GH.x1 + 0.1, MZ1], [0, 1], GT, [-3.8, -1.9, 0, 1.9, 3.8].map((x) => x + GH.x1 + 0.1), 'gatehouse', { noSill: true });
+      for (const sx of [-1, 1]) parapet([sx * GH.x1, GH.z0], [sx * GH.x1, MZ1 - 0.75], [sx, 0], GT, 'auto', 'gatehouse');
+      parapet([-GH.x1, GH.z0], [GH.x1, GH.z0], [0, -1], GT, 'auto', 'gatehouse');
+      // the arms over the gate (Bodiam has three shields over its gate)
+      shield(0, 6.0, GR, 0, 1, 1.05); shield(-1.0, 6.25, GR, 0, 1, 0.7); shield(1.0, 6.25, GR, 0, 1, 0.7);
+      // three keyhole gunloops at its foot; windows above
+      gunloop(-3.8, 0.55, GF, 0, 1); gunloop(3.8, 0.55, GF, 0, 1); gunloop(-GH.x1, 0.55, -10.6, -1, 0);
+      for (const sx of [-1, 1]) {
+        lancet(sx * 3.8, 5.6, GF, 0, 1, 0.55, 1.7); lancet(sx * 3.8, 9.6, GF, 0, 1, 0.6, 1.9);
+        lancet(sx * GH.x1, 9.6, -9.0, sx, 0, 0.5, 1.6);
+      }
+      lancet(0, 9.2, GR, 0, 1, 0.6, 1.9);
+      // the gate's doors, folded back against the passage walls; the passage floor
+      for (const sx of [-1, 1]) box(Math.min(sx * GP, sx * (GP - 0.14)), Math.max(sx * GP, sx * (GP - 0.14)), 0.03, 3.6, -10.9, -9.25, { c: OAK, bands: false, m: 0.8, bandFn: (y) => (Math.abs(y - 0.8) < 0.15 || Math.abs(y - 2.6) < 0.15 ? 0.6 : 1), cuts: [0.65, 0.95, 2.45, 2.75] });
+
+      // ---- the domestic ranges round the courtyard (two storeys, roofs at 9: lead flats) ----
+      const CY = S.courtyard, RH = S.rangesH, IN = X - half;     // inner face of the curtain: 17.1
+      const rangeO = { seed: 60, top: LEAD, topM: 1 };
+      for (const sx of [-1, 1]) {
+        // south range, split by the gate passage; its vault over the passage
+        box(Math.min(sx * GP, sx * IN), Math.max(sx * GP, sx * IN), -0.3, RH, CY.z1, zS - half + 0.01, Object.assign({ fm: (nx, nz, ym) => inPass(nx, sx, ym) }, rangeO));
+        // north range, split by the postern passage
+        box(Math.min(sx * PO.passage / 2, sx * IN), Math.max(sx * PO.passage / 2, sx * IN), -0.3, RH, zN + half - 0.01, CY.z0, Object.assign({ fm: (nx, nz, ym) => passDark(PO.vault)(nx, sx, ym) }, rangeO));
+        // east and west ranges
+        box(Math.min(sx * CY.x1, sx * IN), Math.max(sx * CY.x1, sx * IN), -0.3, RH, CY.z0, CY.z1, rangeO);
+        // a plain parapet on the courtyard side
+      }
+      box(-GP, GP, GV, RH, CY.z1, GH.z0 + 0.01, Object.assign({ under: 0.3 }, rangeO));
+      box(-PO.passage / 2, PO.passage / 2, PO.vault, RH, zN + half - 0.01, CY.z0, Object.assign({ under: 0.3 }, rangeO));
+      const cpO = { c: CAP, bands: false, m: 0.98, topM: 1.06 };
+      box(CY.x0 - 0.01, CY.x1 + 0.01, RH, RH + 0.6, CY.z1 - 0.01, CY.z1 + 0.4, cpO);
+      box(CY.x0 - 0.01, CY.x1 + 0.01, RH, RH + 0.6, CY.z0 - 0.4, CY.z0 + 0.01, cpO);
+      box(CY.x1 - 0.01, CY.x1 + 0.4, RH, RH + 0.6, CY.z0 + 0.4, CY.z1 - 0.4, cpO);
+      box(CY.x0 - 0.4, CY.x0 + 0.01, RH, RH + 0.6, CY.z0 + 0.4, CY.z1 - 0.4, cpO);
+      archZ(0, CY.z1, 1, GP, GV, 0.5);                                         // the gate passage's courtyard mouth
+      archZ(0, CY.z0, -1, PO.passage / 2, PO.vault, 0.5);                       // the postern passage's courtyard mouth
+      // chimneys (Bodiam's ranges carry tall chimney stacks): the hall and the kitchen in the north range, two more
+      for (const [x, z, w, d] of [[-7, -45.4, 1.1, 0.8], [6.5, -45.4, 1.3, 0.9], [10, -45.4, 1.3, 0.9], [15.2, -25, 0.8, 1.1], [-15.2, -36, 0.8, 1.1]]) {
+        box(x - w / 2, x + w / 2, RH - 0.5, 12.6, z - d / 2, z + d / 2, { seed: 70 });
+        box(x - w / 2 - 0.12, x + w / 2 + 0.12, 12.6, 12.85, z - d / 2 - 0.12, z + d / 2 + 0.12, { c: CAP, bands: false });
+        poly([[x - w / 2 + 0.1, 12.86, z - d / 2 + 0.1], [x + w / 2 - 0.1, 12.86, z - d / 2 + 0.1], [x + w / 2 - 0.1, 12.86, z + d / 2 - 0.1], [x - w / 2 + 0.1, 12.86, z + d / 2 - 0.1]], [0, 1, 0], DEEP, 1, true);
+      }
+      // courtyard faces: the great hall's tall two-light windows (north range, west of the screens passage), the kitchen,
+      // the chapel (east range), chambers; doors as dark pointed openings
+      const door = (cx, cz, nx, nz, w, h) => { decal(cx, 0, cz, nx, nz, [[-w / 2 - 0.15, 0], [w / 2 + 0.15, 0], [w / 2 + 0.15, h - w * 0.4], [0, h + 0.3], [-w / 2 - 0.15, h - w * 0.4]], CAP, 1.02, 0.025); decal(cx, 0, cz, nx, nz, [[-w / 2, 0], [w / 2, 0], [w / 2, h - w * 0.5], [0, h], [-w / 2, h - w * 0.5]], DEEP, 1, 0.05); };
+      for (const x of [-11, -8, -5]) hallWindow(x, 3.6, CY.z0, 0, 1, 1.3, 4.0);
+      door(-2.6, CY.z0, 0, 1, 1.1, 2.4);
+      for (const x of [4.5, 8.5, 11.5]) { lancet(x, 5.6, CY.z0, 0, 1, 0.55, 1.6); squareWin(x, 1.9, CY.z0, 0, 1, 0.55, 0.7); }
+      door(6.5, CY.z0, 0, 1, 1.1, 2.3);
+      for (const z of [-20, -24, -28, -32, -36, -40]) { lancet(CY.x1, 5.6, z, -1, 0, 0.55, 1.6); lancet(CY.x0, 5.6, z, 1, 0, 0.55, 1.6); }
+      hallWindow(CY.x1, 3.6, -38.5, -1, 0, 1.1, 3.6);                           // the chapel's window
+      for (const z of [-22, -34]) { door(CY.x1, z, -1, 0, 1.0, 2.3); door(CY.x0, z, 1, 0, 1.0, 2.3); }
+      for (const z of [-26, -30]) { squareWin(CY.x1, 1.9, z, -1, 0, 0.5, 0.7); squareWin(CY.x0, 1.9, z, 1, 0, 0.5, 0.7); }
+      for (const sx of [-1, 1]) for (const x of [4.5, 8, 11.5]) { lancet(sx * x, 5.6, CY.z1, 0, -1, 0.55, 1.6); squareWin(sx * x, 1.9, CY.z1, 0, -1, 0.5, 0.7); }
+      // the gatehouse's back rising over the south range
+      for (const sx of [-1, 1]) lancet(sx * 3.8, 11.2, GH.z0, 0, -1, 0.5, 1.5);
+
+      // ---- the barbican: a squat two-storey outer gate on its own island ----
+      const BP = BA.passage / 2, BV = BA.vault, BT = BA.h;
+      for (const sx of [-1, 1]) {
+        box(Math.min(sx * BP, sx * BA.x1), Math.max(sx * BP, sx * BA.x1), -2.0, BT, BA.z0, BA.z1, { seed: 80, fm: (nx, nz, ym) => passDark(BA.vault)(nx, sx, ym) });
+        box(Math.min(sx * BP, sx * (BA.x1 + 0.25)), Math.max(sx * BP, sx * (BA.x1 + 0.25)), -2.0, 0.3, BA.z0 - 0.25, BA.z1 + 0.25, { m: 0.93, topM: 1 });
+      }
+      box(-BP, BP, BV, BT, BA.z0, BA.z1, { seed: 81, under: 0.3 });
+      archZ(0, BA.z1, -1, BP, BV, 0.25);
+      archZ(0, BA.z0, 1, BP, BV, 0.5);
+      box(-BA.x1 - 0.1, BA.x1 + 0.1, BT - 0.5, BT - 0.22, BA.z0 - 0.1, BA.z1 + 0.1, { c: CAP, bands: false });
+      parapet([-BA.x1, BA.z1], [BA.x1, BA.z1], [0, 1], BT, [-2.1, 0, 2.1].map((x) => x + BA.x1), 'barbican');
+      parapet([BA.x1, BA.z0], [-BA.x1, BA.z0], [0, -1], BT, 'auto', 'barbican');
+      for (const sx of [-1, 1]) parapet([sx * BA.x1, BA.z0 + PT], [sx * BA.x1, BA.z1 - PT], [sx, 0], BT, 'auto', 'barbican', {});
+      shield(0, 5.55, BA.z1, 0, 1, 0.95);
+      for (const sx of [-1, 1]) { lancet(sx * 2.55, 5.2, BA.z1, 0, 1, 0.45, 1.4); lancet(sx * BA.x1, 5.2, -3, sx, 0, 0.45, 1.4); }
+      // its gate: two closed oak leaves, iron-strapped, set behind the arch (the ram strikes here)
+      {
+        const z0 = BA.z1 - 0.42, z1 = BA.z1 - 0.27;
+        const strap = (y) => (Math.abs(y - 0.6) < 0.12 || Math.abs(y - 1.9) < 0.12 || Math.abs(y - 3.2) < 0.12 ? 0.55 : 1);
+        for (const sx of [-1, 1]) box(Math.min(sx * 0.02, sx * (BP + 0.1)), Math.max(sx * 0.02, sx * (BP + 0.1)), 0.03, BV, z0, z1, { c: OAK, bands: false, m: 0.95, bandFn: strap, cuts: [0.48, 0.72, 1.78, 2.02, 3.08, 3.32] });
+        box(-0.03, 0.03, 0.03, BV, z1 - 0.02, z1 + 0.01, { c: DEEP, bands: false, flat: true, noTop: true });
+      }
+
+      // ---- the postern tower: a small square gate tower in the north wall ----
+      const PP = PO.passage / 2, PV = PO.vault, PTH = PO.h;
+      for (const sx of [-1, 1]) box(Math.min(sx * PP, sx * PO.x1), Math.max(sx * PP, sx * PO.x1), BED, PTH, PO.z0, PO.z1, { seed: 90, fm: (nx, nz, ym) => passDark(PO.vault)(nx, sx, ym) });
+      box(-PP, PP, PV, PTH, PO.z0, PO.z1, { seed: 91, under: 0.3 });
+      archZ(0, PO.z0, 1, PP, PV, 0.5);
+      box(-PO.x1 - 0.1, PO.x1 + 0.1, PTH - 0.5, PTH - 0.22, PO.z0 - 0.1, PO.z1 + 0.1, { c: CAP, bands: false });
+      parapet([PO.x1, PO.z0], [-PO.x1, PO.z0], [0, -1], PTH, 'auto', 'postern');
+      for (const sx of [-1, 1]) parapet([sx * PO.x1, PO.z0 + PT], [sx * PO.x1, PO.z1 - PT], [sx, 0], PTH, [], 'postern', {});
+      parapet([-PO.x1, PO.z1], [PO.x1, PO.z1], [0, 1], PTH, [], 'postern', {});
+      lancet(0, 5.6, PO.z0, 0, -1, 0.55, 1.6); lancet(0, 8.7, PO.z0, 0, -1, 0.5, 1.4);
+      shield(0, 4.0, PO.z0, 0, -1, 0.6);
+
+      // ---- floors: stone flags in the passages and a paved way across the courtyard (3 cm proud of the ground) ----
+      const FY = 0.03, FLAG = lin(0xbfae86);
+      const pave = (x0, x1, z0, z1, step) => {
+        for (let z = z0; z < z1 - 1e-6; z += step) {
+          const za = z, zb = Math.min(z1, z + step), k = Math.round((z - z0) / step);
+          const m = (k & 1 ? 0.9 : 0.97) + 0.06 * (hash(k, x0, 9, 2) - 0.5);
+          poly([[x0, FY, za], [x1, FY, za], [x1, FY, zb], [x0, FY, zb]], [0, 1, 0], FLAG, m, true);
+        }
+      };
+      const PS = S.passages;
+      pave(PS.gate.x0, PS.gate.x1, PS.gate.z0, PS.gate.z1, 0.7);
+      pave(PS.barbican.x0, PS.barbican.x1, PS.barbican.z0, PS.barbican.z1, 0.7);
+      pave(PS.postern.x0, PS.postern.x1, PS.postern.z0, PS.postern.z1, 0.7);
+      pave(-1.4, 1.4, CY.z0 + 0.5, PS.gate.z0, 0.9);
+      ctx.addSurface((x, z) => {
+        if (S.inPassage(x, z)) return FY;
+        if (Math.abs(x) <= 1.4 && z > CY.z0 + 0.5 && z < PS.gate.z0) return FY;
+        return null;
+      });
+      // the floors people stand on up on the walls (never over a passage, whose floor is the one below): the wall-walks
+      // (10), the corner towers' tops (14), the mid-towers (13), the gatehouse roof (16), the barbican (8), the postern (12)
+      {
+        const R2 = (AP - PT) * (AP - PT), inR = (x, z, x0, x1, z0, z1) => x > x0 && x < x1 && z > z0 && z < z1;
+        const TW = Object.values(S.towers), MIDS = Object.values(S.midTowers);
+        ctx.addSurface((x, z) => {
+          if (Math.abs(x) > 23 || z > 0 || z < -52 || S.inPassage(x, z)) return null;
+          for (const [cx, cz] of TW) if ((x - cx) * (x - cx) + (z - cz) * (z - cz) < R2) return TH;
+          for (const [cx, cz] of MIDS) if (inR(x, z, cx - S.midHx + PT, cx + S.midHx - PT, cz - S.midHz + PT, cz + S.midHz - PT)) return MH;
+          if (inR(x, z, -GH.x1 + PT, GH.x1 - PT, GH.z0 + PT, MZ1 - 0.75)) return GT;
+          if (inR(x, z, BA.x0 + PT, BA.x1 - PT, BA.z0 + PT, BA.z1 - PT)) return BT;
+          if (inR(x, z, PO.x0 + PT, PO.x1 - PT, PO.z0 + PT, PO.z1)) return PTH;
+          if (inR(x, z, -X, X, zS - half, SO - PT) || inR(x, z, -X, X, NO + PT, zN + half)) return WALK;
+          if (inR(Math.abs(x), z, X - half, EO - PT, zN, zS)) return WALK;
+          return null;
+        });
+      }
+
+      // ---- the bridges: deck tops exactly on SIEGE.deckY ----
+      const deck = (D, thick, step, planks) => {
+        const zs = [];
+        for (let z = D.z0; z < D.z1 - 1e-6; z += step) zs.push(z);
+        zs.push(D.z1);
+        for (let i = 0; i < zs.length - 1; i++) {
+          const za = zs[i], zb = zs[i + 1];
+          const L0 = S.deckY(D.x - D.half, za), R0 = S.deckY(D.x + D.half, za), L1 = S.deckY(D.x - D.half, zb), R1 = S.deckY(D.x + D.half, zb);
+          const m = planks ? (i & 1 ? 0.88 : 1) * (0.96 + 0.08 * hash(i, D.z0, 4, 4)) : 1;
+          const a = [D.x - D.half, L0, za], b = [D.x + D.half, R0, za], c = [D.x + D.half, R1, zb], d = [D.x - D.half, L1, zb];
+          poly([a, b, c, d], [0, 1, 0], OAK_L, m, true);
+          // the deck's sides and underside
+          poly([a, d, [d[0], d[1] - thick, d[2]], [a[0], a[1] - thick, a[2]]], [-1, 0, 0], OAK, 0.8, true);
+          poly([b, [b[0], b[1] - thick, b[2]], [c[0], c[1] - thick, c[2]], c], [1, 0, 0], OAK, 0.8, true);
+          poly([[a[0], a[1] - thick, a[2]], [d[0], d[1] - thick, d[2]], [c[0], c[1] - thick, c[2]], [b[0], b[1] - thick, b[2]]], [0, -1, 0], OAK, 0.45, true);
+        }
+      };
+      const BRG = S.bridge, LK = S.link, PB = S.posternBridge;
+      deck(BRG, 0.32, 0.5, true);
+      deck(LK, 0.28, 0.4, true);
+      deck(PB, 0.26, 0.5, true);
+      const deckBot = BRG.y - 0.32;
+      // the main bridge: stone piers in the moat, three stringers, low kerbs (the ram is pushed over it)
+      for (const zc of [1.5, 4.5]) {
+        box(-BRG.half - 0.35, BRG.half + 0.35, BED, deckBot - 0.28, zc - 0.6, zc + 0.6, { seed: 95 });
+        obox(-BRG.half - 0.35, zc, Math.PI / 4, 0.42, 0.42, BED, deckBot - 0.28, { seed: 95 });       // cutwaters
+        obox(BRG.half + 0.35, zc, Math.PI / 4, 0.42, 0.42, BED, deckBot - 0.28, { seed: 95 });
+        box(-BRG.half - 0.2, BRG.half + 0.2, deckBot - 0.28, deckBot - 0.0, zc - 0.35, zc + 0.35, { c: OAK, bands: false, m: 0.75 });
+      }
+      for (const x of [-1.5, 0, 1.5]) box(x - 0.15, x + 0.15, deckBot - 0.28, deckBot - 0.001, BRG.z0 + 0.6, BRG.z1 - 0.6, { c: OAK, bands: false, m: 0.65, noTop: true });
+      for (const sx of [-1, 1]) {
+        const kx0 = sx > 0 ? BRG.half - 0.22 : -BRG.half, kx1 = kx0 + 0.22;
+        box(kx0, kx1, BRG.y, BRG.y + 0.18, BRG.z0 + 1.05, BRG.z1 - 1.05, { c: OAK, bands: false, m: 0.82 });
+        for (const z of [BRG.z0 + 1.05, BRG.z1 - 1.25]) box(kx0, kx1, BRG.y, BRG.y + 0.75, z, z + 0.2, { c: OAK, bands: false, m: 0.75, topM: 1 });
+      }
+      // the link: a drawbridge (lowered), with its chains up into the gatehouse front
+      for (const sx of [-1, 1]) {
+        const a = new THREE.Vector3(sx * 1.4, LK.y + 0.05, LK.z1 - 0.25), b = new THREE.Vector3(sx * 1.4, gSpring + 2.6, GR - 0.05);
+        const dir = b.clone().sub(a), L = dir.length(); dir.normalize();
+        const yaw = Math.atan2(dir.x, dir.z), mid = a.clone().add(b).multiplyScalar(0.5);
+        // a chain as a thin dark bar
+        const g = new THREE.BoxGeometry(0.08, 0.08, L).toNonIndexed();
+        const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+        g.applyMatrix4(new THREE.Matrix4().makeRotationFromQuaternion(q)); g.translate(mid.x, mid.y, mid.z);
+        const pa = g.attributes.position;
+        for (let i = 0; i < pa.count; i += 3) {
+          const t0 = [pa.getX(i), pa.getY(i), pa.getZ(i)], t1 = [pa.getX(i + 1), pa.getY(i + 1), pa.getZ(i + 1)], t2 = [pa.getX(i + 2), pa.getY(i + 2), pa.getZ(i + 2)];
+          const ic = [IRON.r * 0.8, IRON.g * 0.8, IRON.b * 0.8];
+          pushV(t0, ic); pushV(t1, ic); pushV(t2, ic);
+        }
+        void yaw;
+      }
+      // the postern bridge: timber trestles down to the moat bed, a hand-rail each side
+      const pdb = PB.y - 0.26;
+      for (let z = PB.z0 + 3; z < PB.z1 - 1.5; z += 3.5) {
+        for (const sx of [-1, 1]) box(sx * 1.0 - 0.13, sx * 1.0 + 0.13, BED, pdb, z - 0.13, z + 0.13, { c: OAK, bands: false, m: 0.7 });
+        box(-1.3, 1.3, pdb - 0.22, pdb - 0.001, z - 0.16, z + 0.16, { c: OAK, bands: false, m: 0.72 });
+        box(-0.9, 0.9, -1.4, -1.2, z - 0.08, z + 0.08, { c: OAK, bands: false, m: 0.6 });
+      }
+      for (const sx of [-1, 1]) {
+        const xr = sx * (PB.half - 0.08);
+        for (let z = PB.z0 + 1.2; z <= PB.z1 - 1.0; z += 2.2) box(xr - 0.07, xr + 0.07, PB.y, PB.y + 1.05, z - 0.07, z + 0.07, { c: OAK, bands: false, m: 0.78 });
+        box(xr - 0.06, xr + 0.06, PB.y + 0.95, PB.y + 1.1, PB.z0 + 1.1, PB.z1 - 0.9, { c: OAK_L, bands: false, m: 0.9 });
+      }
+
+      // ---- torch brackets (the flames are below, lit at night) ----
+      const torchAt = [
+        [-2.45, 3.7, GF + 0.1, 0, 1], [2.45, 3.7, GF + 0.1, 0, 1],                  // either side of the gate
+        [-2.55, 3.4, BA.z1 + 0.1, 0, 1], [2.55, 3.4, BA.z1 + 0.1, 0, 1],            // the barbican
+        [-2.0, 3.0, PO.z0 - 0.1, 0, -1], [2.0, 3.0, PO.z0 - 0.1, 0, -1],            // the postern
+        [-3.75, 3.2, CY.z0 + 0.1, 0, 1], [3.75, 3.2, CY.z0 + 0.1, 0, 1],             // the hall door and the kitchen
+      ];
+      for (const [x, y, z, nx, nz] of torchAt) {
+        box(x - 0.06, x + 0.06, y - 0.5, y - 0.38, z - 0.1 * nz - 0.06, z + 0.25 * nz + 0.06, { c: IRON, bands: false, flat: true });
+        obox(x, z + 0.25 * nz, 0, 0.07, 0.07, y - 0.55, y + 0.05, { c: OAK, bands: false, flat: true, m: 0.7 });
+        flameSpots.push([x, y + 0.28, z + 0.25 * nz]);
+      }
+      // on the merlons: the two south corner towers (clear of the breach) and the south curtain
+      for (const sx of [-1, 1]) {
+        const [cx, cz] = sx < 0 ? S.towers.SW : S.towers.SE, th = sx < 0 ? TAU / 6 : -TAU / 6;
+        const mx = cx + Math.sin(th) * (AP - PT / 2), mz = cz + Math.cos(th) * (AP - PT / 2);
+        obox(mx, mz, 0, 0.07, 0.07, TH + MER, TH + MER + 0.55, { c: OAK, bands: false, flat: true, m: 0.7 });
+        flameSpots.push([mx, TH + MER + 0.8, mz]);
+        obox(sx * 10.45, SO - PT / 2, 0, 0.07, 0.07, WALK + MER, WALK + MER + 0.55, { c: OAK, bands: false, flat: true, m: 0.7 });
+        flameSpots.push([sx * 10.45, WALK + MER + 0.8, SO - PT / 2]);
+      }
+
+      // ---- flagpoles ----
+      const flags = [];   // { x, y (top), z, kind }
+      const pole = (x, y0, y1, z) => {
+        obox(x, z, Math.PI / 4, 0.09, 0.09, y0, y1, { c: POLE, bands: false, flat: true });
+        prism(ngonPts(x, z, 0.16, 6, 0), y1, y1 + 0.22, { c: GOLD, bands: false, flat: true, topM: 1.1 });
+      };
+      pole(0, GT, GT + 5.6, GH.z0 + 0.9); flags.push({ x: 0, y: GT + 5.5, z: GH.z0 + 0.9, kind: 'banner' });
+      for (const k of Object.keys(towerTops)) { const tt = towerTops[k]; pole(tt.turret[0], tt.poleTop, tt.poleTop + 3.6, tt.turret[1]); flags.push({ x: tt.turret[0], y: tt.poleTop + 3.5, z: tt.turret[1], kind: 'pennon' }); }
+      for (const [cx, cz] of Object.values(S.midTowers)) { pole(cx, MH, MH + 4.2, cz); flags.push({ x: cx, y: MH + 4.1, z: cz, kind: 'pennon' }); }
+      pole(0, PTH, PTH + 3.6, PO.z1 - 1.2); flags.push({ x: 0, y: PTH + 3.5, z: PO.z1 - 1.2, kind: 'pennon' });
+
+      const worldMesh = new THREE.Mesh(end(), M);
+      ctx.world.add(worldMesh);
+
+      // ================= the breakable battlement =================
+      // The south-west tower's parapet facing T1 (SIEGE.breach): per side a sill in two halves and its merlon. They burst
+      // outward at breakAt, tumble and splash into the moat around breachSplash, and rise back into place under the mist.
+      {
+        const sideLen = 2 * RV * Math.sin(Math.PI / 12), [cx, cz] = S.towers.SW;
+        const sp = BR.splash;
+        for (let k = -2; k <= 2; k++) {
+          const th = k * TAU / 12;
+          let dth = Math.atan2(Math.sin(th - BR.face), Math.cos(th - BR.face));
+          if (Math.abs(dth) >= BR.arc) continue;
+          const mx = cx + Math.sin(th) * (AP - PT / 2), mz = cz + Math.cos(th) * (AP - PT / 2);
+          const L = sideLen + 0.32;
+          const parts = [
+            { off: -L / 4, w: L / 2, y0: TH, y1: TH + SILL },
+            { off: L / 4, w: L / 2, y0: TH, y1: TH + SILL },
+            { off: 0, w: 1.4, y0: TH + SILL, y1: TH + MER },
+          ];
+          for (const pt of parts) {
+            const px = mx + Math.cos(th) * pt.off, pz = mz - Math.sin(th) * pt.off, py = (pt.y0 + pt.y1) / 2;
+            const ox = Math.sin(th), oz = Math.cos(th);
+            const reach = rr(2.6, 4.2);
+            const lx = ctx.lerpN(px + ox * reach, sp[0], 0.3) + rr(-0.6, 0.6), lz = Math.max(-6.5, ctx.lerpN(pz + oz * reach, sp[1], 0.3) + rr(-0.5, 0.7));
+            const Tf = 1.7 + rr(-0.12, 0.12) + (pt.y0 > TH ? 0.05 : -0.05);
+            pieces.push({
+              rest: [px, py, pz], yaw: th, size: [pt.w - 0.02, pt.y1 - pt.y0 - 0.01, PT - 0.01], land: [lx, lz], T: Tf, delay: rr(0, 0.07),
+              axis: new THREE.Vector3(rr(-1, 1), rr(-0.3, 0.3), rr(-1, 1)).normalize(), spin: rr(3, 7) * (rnd() < 0.5 ? -1 : 1),
+              rise: pt.y0 > TH ? 1.3 : 0.7, back: 165 + rr(0, 4.5),
+            });
+          }
+        }
+        // chips: small stones that only show in the burst
+        const bp = BR.point;
+        for (let i = 0; i < 7; i++) {
+          const a = BR.face + rr(-1.0, 1.0), reach = rr(2.5, 5.5), s = rr(0.22, 0.42);
+          pieces.push({
+            chip: true, rest: [bp[0] + rr(-0.6, 0.6), bp[1] + rr(-0.2, 0.4), bp[2] + rr(-0.3, 0.2)], yaw: rr(0, TAU), size: [s, s * rr(0.7, 1.1), s * rr(0.7, 1.2)],
+            land: [bp[0] + Math.sin(a) * reach, Math.max(-6.6, bp[2] + Math.cos(a) * reach)], T: rr(1.75, 2.1), delay: rr(0, 0.05),
+            axis: new THREE.Vector3(rr(-1, 1), rr(-1, 1), rr(-1, 1)).normalize(), spin: rr(6, 11),
+          });
+          chipsN++;
+        }
+        begin();
+        // a unit block in the parapet's stone: sides a touch darker than its top
+        prism([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]], -0.5, 0.5, { c: CAP, bands: false, flat: true, m: 0.95, topM: 1.1, under: 0.7 });
+        const g = end();
+        piecesMesh = new THREE.InstancedMesh(g, M, pieces.length);
+        piecesMesh.frustumCulled = false;
+        ctx.root.add(piecesMesh);
+        for (const p of pieces) {
+          // the time it falls: from its rest place to the landing at y = water level in T seconds
+          p.vy = (S.moat.level - p.rest[1] + 0.5 * 9.8 * p.T * p.T) / p.T;
+          p.q0 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), p.yaw);
+          p.splashIdx = p.chip ? -1 : splashes.length;
+          if (!p.chip) splashes.push({ x: p.land[0], z: p.land[1], t: T.breakAt + p.delay + p.T, s: rr(0.8, 1.15) });
+        }
+      }
+      // the dust puff where the stone strikes, and splashes where the pieces fall
+      {
+        const smokeMat = new THREE.MeshStandardMaterial({ color: lin(0xd9c9a6), flatShading: true, roughness: 1, transparent: true, opacity: 0, depthWrite: false });
+        const ico = new THREE.IcosahedronGeometry(1, 0);
+        dustMesh = new THREE.InstancedMesh(ico, smokeMat, 14);
+        dustMesh.frustumCulled = false;
+        ctx.root.add(dustMesh);
+        const bp = BR.point;
+        for (let i = 0; i < 14; i++) {
+          const a = BR.face + rr(-1.3, 1.3), low = i >= 10;
+          dust.push({ p: [bp[0] + rr(-0.9, 0.9), bp[1] + rr(-0.5, 0.4), bp[2] + rr(-0.7, 0.3)], v: [Math.sin(a) * rr(1.0, 2.6), low ? rr(-1.6, -0.9) : rr(0.2, 1.4), Math.cos(a) * rr(1.0, 2.6)], r0: rr(0.25, 0.45), r1: low ? rr(0.7, 1.1) : rr(1.0, 1.9), spin: rr(-1, 1) });
+        }
+        const splashMat = new THREE.MeshStandardMaterial({ color: lin(0xe9f1ee), flatShading: true, roughness: 0.6, transparent: true, opacity: 0.8, depthWrite: false, side: THREE.DoubleSide });
+        const cone = new THREE.CylinderGeometry(1, 0.3, 1, 7, 1, true); cone.translate(0, 0.5, 0);
+        splashMesh = new THREE.InstancedMesh(cone, splashMat, splashes.length);
+        splashMesh.frustumCulled = false;
+        ctx.root.add(splashMesh);
+      }
+
+      // ================= the portcullis (iron-clad oak, Bodiam's survives) =================
+      {
+        begin();
+        const W = GH.passage + 0.4, H = GV + 0.3;
+        for (let i = 0; i < 6; i++) { const x = -W / 2 + 0.2 + i * (W - 0.4) / 5; box(x - 0.09, x + 0.09, 0, H, -0.09, 0.09, { c: OAK, bands: false, flat: true, m: 0.62, topM: 0.7 }); prism(ngonPts(x, 0, 0.11, 4, Math.PI / 4).map((p) => p), -0.28, 0.0, { c: IRON, bands: false, flat: true }); }
+        for (let j = 0; j < 6; j++) { const y = 0.45 + j * (H - 0.7) / 5; box(-W / 2, W / 2, y - 0.08, y + 0.08, -0.13, 0.13, { c: OAK, bands: false, flat: true, m: 0.55 }); }
+        portcullis = new THREE.Mesh(end(), M);
+        portcullis.position.set(0, 2.5, GR - 0.82);
+        portcullis.matrixAutoUpdate = true;
+        ctx.root.add(portcullis);
+      }
+      // ================= the postern's gate leaves (two, hung on the passage walls, opening inward) =================
+      {
+        begin();
+        const strap = (y) => (Math.abs(y - 0.6) < 0.1 || Math.abs(y - 2.4) < 0.1 ? 0.55 : 1);
+        box(0, PP, 0, PV - 0.1, -0.07, 0.07, { c: OAK, bands: false, m: 0.9, bandFn: strap, cuts: [0.5, 0.7, 2.3, 2.5], under: 0.6 });
+        leaves = new THREE.InstancedMesh(end(), M, 2);
+        leaves.frustumCulled = false;
+        leaves.userData.z = PO.z0 + 0.58;
+        ctx.root.add(leaves);
+      }
+      // ================= torch flames (lit with the lamps, from dusk to morning) =================
+      {
+        const g = new THREE.OctahedronGeometry(1, 0);
+        flames = new THREE.InstancedMesh(g, new THREE.MeshBasicMaterial({ color: lin(0xffb44a) }), flameSpots.length);
+        flames.frustumCulled = false;
+        ctx.root.add(flames);
+        for (const f of flameSpots) ctx.addLantern(new THREE.Vector3(f[0], f[1] + 0.12, f[2]));
+      }
+
+      // ================= the Bull banner and the pennons =================
+      {
+        // the arms, drawn once on a canvas: Gules, a bull passant argent, armed or (the same drawing as the knights' jupons)
+        const BULL = {
+          body: [
+            [[-0.28, 0.3], [0.4, 0.3], [0.4, 0.7], [-0.24, 0.76]], [[-0.3, 0.6], [0.02, 0.7], [-0.04, 0.9], [-0.24, 0.92]],
+            [[0.22, 0.6], [0.42, 0.62], [0.42, 0.76], [0.24, 0.78]], [[-0.52, 0.42], [-0.24, 0.4], [-0.2, 0.76], [-0.48, 0.8]],
+            [[-0.6, 0.34], [-0.44, 0.33], [-0.42, 0.52], [-0.6, 0.52]], [[-0.24, 0.34], [-0.1, 0.34], [-0.16, 0.18], [-0.3, 0.2]],
+            [[-0.3, 0.2], [-0.17, 0.17], [-0.27, 0.05], [-0.39, 0.09]], [[-0.06, 0.32], [0.08, 0.32], [0.08, 0.0], [-0.06, 0.0]],
+            [[0.26, 0.32], [0.4, 0.32], [0.38, 0.0], [0.26, 0.0]], [[0.11, 0.32], [0.24, 0.32], [0.2, 0.02], [0.09, 0.04]],
+            [[0.39, 0.7], [0.46, 0.68], [0.5, 0.3], [0.44, 0.3]], [[0.42, 0.32], [0.53, 0.32], [0.53, 0.15], [0.42, 0.15]],
+          ],
+          accent: [[[-0.5, 0.77], [-0.43, 0.78], [-0.5, 0.95], [-0.61, 0.99]], [[-0.31, 0.76], [-0.24, 0.75], [-0.17, 0.96], [-0.26, 0.95]]],
+        };
+        const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
+        const g2 = cv.getContext('2d');
+        g2.fillStyle = '#b5322a'; g2.fillRect(0, 0, 256, 128);
+        const drawBull = (cx, cy, s) => {
+          for (const [list, colr] of [[BULL.body, '#efe9dc'], [BULL.accent, '#d9a92c']]) {
+            g2.fillStyle = colr;
+            for (const q of list) { g2.beginPath(); q.forEach(([u, v2], i) => { const X2 = cx + u * s, Y2 = cy - v2 * s; if (i) g2.lineTo(X2, Y2); else g2.moveTo(X2, Y2); }); g2.closePath(); g2.fill(); }
+          }
+          g2.fillStyle = '#efe9dc';
+        };
+        drawBull(64, 100, 92);            // the banner (left half): the whole coat
+        drawBull(162, 86, 50);            // the pennon (right half): the bull by the staff
+        const tex = new THREE.CanvasTexture(cv);
+        tex.encoding = THREE.sRGBEncoding;
+        flagMat = new THREE.MeshStandardMaterial({ map: tex, side: THREE.DoubleSide, flatShading: true, roughness: 0.9 });
+        flagU = { uT: { value: 0 }, uAmp: { value: 1 }, uBoost: { value: 0 } };
+        flagMat.onBeforeCompile = (sh) => {
+          sh.uniforms.uFT = flagU.uT; sh.uniforms.uFA = flagU.uAmp; sh.uniforms.uFB = flagU.uBoost;
+          sh.vertexShader = 'uniform float uFT;\nuniform float uFA;\nuniform float uFB;\nattribute vec2 aFlag;\n' + sh.vertexShader.replace('#include <begin_vertex>', [
+            '#include <begin_vertex>',
+            'float fu = aFlag.x, fph = aFlag.y;',
+            'float fw = sin(uFT * 3.4 - fu * 5.5 + fph) * 0.26 + sin(uFT * 5.9 - fu * 9.0 + fph * 1.7) * 0.07;',
+            'transformed.z += fw * fu * uFA * (1.0 + 0.8 * uFB);',
+            'transformed.y += (-0.16 * (1.0 - uFB) + 0.18 * uFB * sin(uFT * 2.0 + fph)) * fu * fu;',
+            'transformed.x -= abs(fw) * 0.12 * fu;',
+          ].join('\n'));
+        };
+        flagMat.customProgramCacheKey = () => 'castleFlag';
+        flagMat.userData.extraKey = 'castleFlag';
+        const pos = [], uv = [], fl = [];
+        // a flag flying east (the wind) from a staff at (x, y top, z): w long, h at the hoist, h2 at the fly, a swallow tail
+        const addFlag = (x, yTop, z, w, h, h2, nu, nv, u0, u1, tail, ph) => {
+          const at = (i, j) => {
+            const fu = i / nu, hh = h + (h2 - h) * fu, fv = j / nv;
+            let px = x + 0.1 + fu * w;
+            if (tail && fu > 0.75) px -= (1 - Math.abs(fv - 0.5) * 2) * (fu - 0.75) / 0.25 * w * 0.2;
+            const py = yTop - h / 2 + (fv - 0.5) * hh;
+            return [px, py, z, u0 + (u1 - u0) * fu, 0.5 + (py - (yTop - h / 2)) / h, fu];
+          };
+          for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+            const a = at(i, j), b = at(i + 1, j), c = at(i + 1, j + 1), d = at(i, j + 1);
+            for (const p of [a, b, c, a, c, d]) { pos.push(p[0], p[1], p[2]); uv.push(p[3], p[4]); fl.push(p[5], ph); }
+          }
+        };
+        for (const f of flags) {
+          if (f.kind === 'banner') addFlag(f.x, f.y, f.z, 2.5, 2.3, 2.3, 7, 4, 0.0, 0.5, false, 0.0);
+          else addFlag(f.x, f.y, f.z, 3.0, 1.0, 0.4, 6, 2, 0.5, 1.0, true, f.x * 0.37 + f.z * 0.21);
+        }
+        const fg = new THREE.BufferGeometry();
+        fg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        fg.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+        fg.setAttribute('aFlag', new THREE.Float32BufferAttribute(fl, 2));
+        fg.computeVertexNormals();
+        const fm = new THREE.Mesh(fg, flagMat);
+        fm.frustumCulled = false;
+        ctx.root.add(fm);
+      }
+
+      // ================= what the choreographers need =================
+      const ladyCren = crenels.find((c) => c.where === 'gatehouse' && Math.abs(c.x) < 0.1 && c.face === 0);
+      const damselCren = crenels.find((c) => c.where === 'curtainS' && Math.abs(c.x - 7.3) < 0.1);
+      const castle = {
+        // standing heights (floors people stand on)
+        walkY: WALK, towerTopY: TH, midTowerTopY: MH, gatehouseTopY: GT, barbicanTopY: BT, posternTopY: PTH, rangeRoofY: RH, floorY: FY,
+        sill: SILL, merlonTop: MER,                 // a crenel's sill and a merlon's top, above the floor
+        crenels, merlons,
+        lady: ladyCren ? { x: ladyCren.x, y: GT, z: ladyCren.z, face: 0 } : null,     // over the gate, at the middle crenel
+        damsel: damselCren || null,                                            // above T2's hit on the south curtain (x 6.5)
+        bullGuns: ctx.spots.BULL_GUNS,
+        // the moving parts' state at a cycle time
+        portcullisBottom: (t) => portcullisY(t), posternOpen: (t) => posternK(t), breachBroken: (t) => breachBroken(t),
+      };
+      ctx.castle = castle;
+      window.CASTLE = castle;
+
+      // ================= taps =================
+      const lift = () => { tapAt = ctx.clock.elapsed; };
+      const tagC = new THREE.Vector3(0, 12, -30), tagG = new THREE.Vector3(0, 9, GF), tagB = new THREE.Vector3(0, 5, BA.z1), tagX = new THREE.Vector3(BR.point[0], BR.point[1], BR.point[2]);
+      ctx.tag('castle', () => tagC, { r: 22, onTap: lift });
+      ctx.tag('gatehouse', () => tagG, { r: 6, onTap: lift });
+      ctx.tag('barbican', () => tagB, { r: 4 });
+      ctx.tag('breach', () => tagX, { r: 4 });
+
+      // debug: ?debug=castle logs the counts
+      if ((new URLSearchParams(location.search).get('debug') || '').includes('castle')) {
+        console.log('castle: static tris', worldMesh.geometry.attributes.position.count / 3, 'crenels', crenels.length, 'merlons', merlons.length, 'flames', flameSpots.length, 'pieces', pieces.length);
+        window.__castleCounts = { tris: worldMesh.geometry.attributes.position.count / 3 };
+      }
+    },
+
+    update(t, dt, ctx) {
+      const ct = ctx.cycle.t, smooth01 = ctx.smooth01;
+      const m = M4[0], q = Q[0], q2 = Q[1], p = V[0], s = V[1];
+      // ---- the breakable battlement ----
+      const tb = T.breakAt;
+      for (let i = 0; i < pieces.length; i++) {
+        const P = pieces[i];
+        const t0 = tb + P.delay, tau = ct - t0;
+        let vis = 1;
+        if (tau < 0 || (!P.chip && ct >= P.back + 3.2)) {
+          // whole (before the hit, and after it's put back)
+          if (P.chip) vis = 0;
+          p.set(P.rest[0], P.rest[1], P.rest[2]); q.copy(P.q0);
+        } else if (tau <= P.T + 0.5) {
+          const k = Math.min(tau, P.T) / P.T;
+          const x = P.rest[0] + (P.land[0] - P.rest[0]) * k, z = P.rest[2] + (P.land[1] - P.rest[2]) * k;
+          let y = P.rest[1] + P.vy * Math.min(tau, P.T) - 4.9 * Math.min(tau, P.T) * Math.min(tau, P.T);
+          if (tau > P.T) { const u = (tau - P.T) / 0.5; y -= 1.2 * u; vis = 1 - smooth01(u); }   // sinking into the moat
+          if (P.chip) vis *= smooth01(tau / 0.06);
+          p.set(x, y, z);
+          q2.setFromAxisAngle(P.axis, P.spin * Math.min(tau, P.T + 0.3));
+          q.copy(q2).multiply(P.q0);
+        } else if (!P.chip && ct >= P.back) {
+          // put back under the mist: it rises out of the tower's wall into its place
+          const u = smooth01((ct - P.back) / 3.2);
+          p.set(P.rest[0], P.rest[1] - P.rise * (1 - u), P.rest[2]); q.copy(P.q0);
+        } else { vis = 0; p.set(P.rest[0], P.rest[1] - 2, P.rest[2]); q.copy(P.q0); }
+        s.set(P.size[0] * vis, P.size[1] * vis, P.size[2] * vis);
+        if (vis <= 0.001) s.set(0, 0, 0);
+        piecesMesh.setMatrixAt(i, m.compose(p, q, s));
+      }
+      piecesMesh.instanceMatrix.needsUpdate = true;
+      // dust: a puff at the strike that swells, drifts east on the wind and thins
+      {
+        const tau = ct - tb, on = tau > 0 && tau < 4.5;
+        dustMesh.material.opacity = on ? 0.6 * smooth01(tau / 0.08) * (1 - smooth01((tau - 0.3) / 4.0)) : 0;
+        dustMesh.visible = on;
+        if (on) {
+          for (let i = 0; i < dust.length; i++) {
+            const D = dust[i], e = 1 - Math.exp(-tau * 1.4);
+            p.set(D.p[0] + D.v[0] * e * 1.6 + 0.7 * tau, D.p[1] + D.v[1] * e * 1.6 + 0.25 * tau, D.p[2] + D.v[2] * e * 1.6 - 0.2 * tau);
+            const r = D.r0 + (D.r1 - D.r0) * smooth01(tau / 2.2);
+            q.setFromAxisAngle(V[2].set(0, 1, 0), D.spin * tau);
+            s.set(r, r * 0.85, r);
+            dustMesh.setMatrixAt(i, m.compose(p, q, s));
+          }
+          dustMesh.instanceMatrix.needsUpdate = true;
+        }
+      }
+      // splashes: a white burst where each piece goes in
+      {
+        let any = false;
+        for (let i = 0; i < splashes.length; i++) {
+          const W = splashes[i], tau = ct - W.t;
+          if (tau > 0 && tau < 1.4) {
+            any = true;
+            const hgt = 2.2 * W.s * Math.sin(Math.PI * Math.min(1, tau / 1.1)) + 0.01, r = (0.3 + 0.7 * smooth01(tau / 1.2)) * W.s;
+            p.set(W.x, ctx.WATER.level - 0.05, W.z); q.identity(); s.set(r, hgt, r);
+          } else { p.set(W.x, -5, W.z); q.identity(); s.set(0, 0, 0); }
+          splashMesh.setMatrixAt(i, m.compose(p, q, s));
+        }
+        splashMesh.instanceMatrix.needsUpdate = true;
+        splashMesh.visible = any;
+        
+      }
+      // ---- the portcullis ----
+      portcullis.position.y = portcullisY(ct);
+      // ---- the postern's leaves ----
+      {
+        const k = posternK(ct), a = 1.5 * k;
+        const z = leaves.userData.z, PP = S.postern.passage / 2;
+        p.set(-PP, 0.03, z); q.setFromAxisAngle(V[2].set(0, 1, 0), -a); s.set(1, 1, 1);
+        leaves.setMatrixAt(0, m.compose(p, q, s));
+        p.set(PP, 0.03, z); q.setFromAxisAngle(V[2].set(0, 1, 0), Math.PI + a);
+        leaves.setMatrixAt(1, m.compose(p, q, s));
+        leaves.instanceMatrix.needsUpdate = true;
+      }
+      // ---- torch flames: with the lamps (the base lights those from dusk to morning) ----
+      {
+        const night = smooth01((0.75 - ctx.light.day) / 0.4);
+        flames.visible = night > 0.01;
+        if (flames.visible) {
+          for (let i = 0; i < flameSpots.length; i++) {
+            const f = flameSpots[i], fl = 0.85 + 0.15 * Math.sin(t * 9.0 + i * 2.1) * Math.sin(t * 5.3 + i);
+            p.set(f[0] + 0.03 * Math.sin(t * 6 + i), f[1], f[2]); q.identity(); s.set(0.13 * night, 0.3 * night * fl, 0.13 * night);
+            flames.setMatrixAt(i, m.compose(p, q, s));
+          }
+          flames.instanceMatrix.needsUpdate = true;
+        }
+      }
+      // ---- flags: the wind, and a gust on a tap ----
+      {
+        const since = ctx.clock.elapsed - tapAt;
+        const boost = since >= 0 && since < 5 ? Math.sin(Math.PI * Math.min(1, since / 5)) * (since < 0.6 ? smooth01(since / 0.6) : 1) : 0;
+        flagU.uT.value = t;
+        flagU.uAmp.value = 0.75 + 0.35 * (ctx.wind ? ctx.wind.strength - 0.6 : 0) / 0.6;
+        flagU.uBoost.value = Math.max(boost, ctx.wind ? ctx.wind.gust * 0.6 : 0);
+      }
+    },
+  });
+
+  // ---------- the timeline of the moving parts (pure functions of the cycle) ----------
+  const sm = (x) => { const c = Math.min(1, Math.max(0, x)); return c * c * (3 - 2 * c); };
+  const HALF_UP = 2.5;
+  // the portcullis's bottom edge: half up; it drops at the alarm (96.0, down by 96.9, a little bounce), and is wound
+  // up again under the night mist (166-172)
+  function portcullisY(ct) {
+    const a = T.alarm;
+    if (ct < a) return HALF_UP;
+    if (ct < a + 0.75) { const u = (ct - a) / 0.75; return HALF_UP * (1 - u * u); }
+    if (ct < a + 1.15) { const u = (ct - a - 0.75) / 0.4; return 0.12 * Math.sin(Math.PI * u); }
+    if (ct < 166) return 0;
+    if (ct < 172) return HALF_UP * sm((ct - 166) / 6);
+    return HALF_UP;
+  }
+  // the postern gate: 0 shut, 1 open. Opens at 99 (open by 100, when the knights ride out); shuts 157-158.6 once the
+  // knights are home (SIEGE.times.knightsHome ends 156)
+  function posternK(ct) {
+    const o = T.posternOpens, c = T.knightsHome[1] + 1;
+    if (ct < o || ct > c + 1.6) return 0;
+    if (ct < o + 1.0) return sm(ct - o);
+    if (ct < c) return 1;
+    return 1 - sm((ct - c) / 1.6);
+  }
+  // are the battlements down? (from the burst until the last piece is back under the mist)
+  function breachBroken(ct) { return ct >= T.breakAt && ct < 172.5; }
+})();
