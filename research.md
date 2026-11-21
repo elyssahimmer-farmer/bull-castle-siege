@@ -1018,3 +1018,132 @@ Secondary sources: Wikipedia *Warwolf* (citing Prestwich, Bain, Simpson & Galbra
 - HES, Bothwell: https://www.historicenvironment.scot/visit/all/bothwell-castle/history-and-stories/
 - HES blog, War Wolf: https://blog.historicenvironment.scot/2024/04/the-war-wolf-at-stirling-castle/
 - Pilling, *The road to Bothwell*: https://davidpilling.blogspot.com/2019/11/the-road-to-bothwell.html
+
+---
+
+## 18. Inside the castle: the rooms and the way up to the walls
+
+
+**Read this session.** I fetched every page below through the summarising web-fetch tool. Anything that came back only through a search-engine summary is marked **(relayed)**.
+- Wikipedia, *Bodiam Castle* (citing Thackray 2004, the National Trust guidebook; Johnson 2002; Cathcart King 1988).
+- The Gatehouse Gazetteer, site 1081 (quoting the Historic England scheduling and listing reports).
+- National Trust, *Exploring Bodiam Castle*.
+- Britain Express, *Bodiam Castle*.
+- Time Travel Britain, *Majestic Bodiam Castle* (a popular site with no citations; it is only a lead).
+- Early Oak Reproductions, Bodiam photo captions (a popular site).
+- Wikimedia Commons, *File:Bodiam Castle ground plan.jpg* (redrawn from the plan in *Archaeological Journal* 62 (1905), p. 179).
+- Northwestern University, *Medieval Buildings: Bodiam*.
+- Vegetius IV.8 and IV.10 (thelatinlibrary.com).
+- Wikipedia, *Conwy town walls* and *Curtain wall (fortification)*, read as comparables.
+
+**Orientation.** Everything below uses **Bodiam's own compass, with the gate in the north**. Our castle's gate faces south. If the design turns the plan 180°, north and south swap and east and west swap. The right-hand column of the table does that arithmetic [INVENTED: the rotation only].
+
+### 18a. Which range held what (Bodiam orientation)
+
+| Where at Bodiam | What it held | Source | Ours (turned 180°) |
+|---|---|---|---|
+| **South range, east of the postern** | **Great hall**, 24 × 40 ft (7.3 × 12.2 m), "as tall as the curtain wall", with "a large fireplace". A big mullioned and transomed window near the east end of the south curtain marks it | [historian: Wikipedia (no footnote on these lines); Gatehouse, from the scheduling report] | North range, west of the north postern |
+| **South range, west of the hall** | **Screens passage**, with **buttery** (the cellar for ale and wine) and **pantry** on the ground floor and an unidentified room above | [historian: Wikipedia; NT] | North range |
+| **South range, far west end** | **Great kitchen**, "as tall as the curtain walls to provide a large space to absorb the heat" | [historian: Wikipedia] | North range, far east end |
+| **South-west corner tower** | **The well** in the basement, reached by steps down from the kitchen. A kitchen steward's lodging and a **dovecote** were on the floors above | [historian: NT; Gatehouse; Wikipedia citing Thackray pp. 48–49] | North-east corner tower |
+| **South wall, centre** | **Postern tower**: square, three storeys, with its own portcullis, a drawbridge to the south bank, and perhaps a goods entrance | [historian: Gatehouse; NT ("may have been used for delivering goods")] | North wall, centre |
+| **East range, south part** | **The lord and lady's apartments**, "set across two floors", with east-facing windows and fireplaces. The plan key reads, from south to north: great chamber (D), chamber (C), chapel (B). Thackray: "The exact layout of the rooms is unclear" | [historian: NT; Wikipedia citing Thackray p. 42; Commons plan key] | West range, north part |
+| **East square tower** | Reached from the great chamber | [historian: Time Travel Britain; weak source] | West square tower |
+| **East range, north end** | **Chapel**. The curtain here projects 9 ft (2.7 m) into the moat to make room for it. Its east window, of three plain pointed lights, sits in a bay on the north side of the east tower. An **oratory** above it was where the lord and lady sat | [historian: Wikipedia; Gatehouse; NT] | West range, south end |
+| **North-east tower** | Possibly important visitors and their households | [historian: Time Travel Britain; weak source] | South-west tower |
+| **West range** | A **retainers' hall** (ground floor only) and **retainers' kitchen**, connected to each other. The hall has no west windows and no fireplace; above it is "a room with no fireplace and of unclear purpose" | [historian: Wikipedia citing Thackray pp. 51–52; Commons plan I, J] | East range |
+| **North-west corner tower** | A garderobe and a fireplace on each of its three upper floors. The 1905 plan calls it the **prison** | [historian: Wikipedia citing Thackray pp. 52–54; Commons plan S] | South-east tower |
+| **North range, west end** | Uncertain. It has been called the **stables**, but its sparse lighting and lack of drains argue against that. The plan offers an ante-room, service rooms or stables (K, L1, L2) | [historian: Wikipedia; Commons plan key] | South range, east end |
+| **North range, east of the gate** | A two-storey building: storage in the basement, accommodation above | [historian: Wikipedia citing Thackray p. 40] | South range, west of the gate |
+| **North wall, centre** | **Gatehouse**: three storeys and a basement, with **guardrooms** either side of the passage on the ground floor | [historian: Wikipedia citing Thackray pp. 36–37; Gatehouse] | South wall, centre (our gate) |
+| **All four corner towers** | Sleeping accommodation lit by single-light lancets. There are **cellars** at the base of each corner tower and all along the east side | [historian: Gatehouse scheduling report; Northwestern] | Same |
+
+- **Separate households.** "The structure was divided into separate living areas for the lord and his family, high-status guests, the garrisons, and servants" [historian: Wikipedia citing Thackray p. 40]. Britain Express: Dalyngrigge "built a completely self-contained retainer's hall", while the lord kept control of both entrances and three of the four angle towers [historian: Britain Express, no author cited].
+- **28 garderobes** drained into the moat [historian: Wikipedia citing Johnson 2002 pp. 20, 22].
+- **The ruin.** The buildings inside were dismantled, probably after 1644 [historian: Wikipedia]. Today mostly footings survive, plus the doors, windows and fireplaces in the inner face of the curtain [historian: Gatehouse].
+
+### 18b. The way up: stairs and the wall-walk
+
+- **Newel stairs in the towers.** The towers' "walls and stone newel stairways survive largely intact" [historian: Gatehouse, from the scheduling report]. The listing gives the corner towers stair "vices" [historian: Historic England listing 1044134, **relayed**; the page itself returned 403].
+- "You could climb the steep spiral staircases to the top of the towers" [historian: NT]. The postern tower's stair is "steep with narrow treads and a steep rise" [historian: NT]. The visitor access statement gives up to 56 steps to a tower top [**relayed**; the PDF could not be read].
+- **Gatehouse.** The small turrets on the gate towers are "only heads to the stair-wells" [historian: History Today, **relayed**; the page returned 403].
+- **Up to the parapet.** One can "climb up an internal stair to the parapet walk in several places", and reach "the roof of the Postern Tower" [historian: Britain Express].
+- **A stair inside the range.** A newel stair in the south range linked the lord's chambers to the great hall; only its base remains [historian: Time Travel Britain; weak source].
+- **Whether the wall-walk ran all the way round, or passed through the towers:** [silent]. No source read says.
+  - Comparables only:
+    - A wall walk let defenders "fight or move from one part of the castle to another" [historian: Wikipedia *Curtain wall*].
+    - At Conwy's town walls (1280s), the towers "originally included removable wooden bridges to allow sections of the walls to be sealed off" [historian: Wikipedia *Conwy town walls*].
+  - **Design suggestion:**
+    - Bodiam's curtain is two storeys and its towers three [§3].
+    - So the curtain walk would meet each tower at a doorway into an upper floor. The newel stair inside the tower then climbs to its roof and leads down to the courtyard.
+    - [INVENTED: inferred from the storey heights; no Bodiam source describes the junction.]
+
+### 18c. What the rooms had inside (c. 1390–1400)
+
+- **The great hall.**
+  - "The whole household would have eaten here at communal meals." "Guests sat at benches with tables set length-ways down the hall, and the Dallingridges sat on a stepped dais facing the room." Owners "would retreat to their chambers to eat" except on special occasions [historian: NT].
+  - It had a wall fireplace, not a central hearth [historian: Wikipedia ("a large fireplace")]. A louvre is [silent].
+  - The dais was at the **east** end, by the lord's range [historian: Early Oak caption ("people are seated on the raised dais"), together with the plan; inferred].
+- **The screens passage.**
+  - It "divided the castle between the service end and the main rooms" [historian: NT].
+  - Three close-set narrow arches survive. The kitchen was reached "through the central arches" [historian: NT; Early Oak caption].
+  - Buttery and pantry were to either side [historian: search summary of a REED record, **relayed**; not confirmed on the page].
+- **The kitchen.** "a huge roasting hearth in the south wall and a second hearth in the north, inset with bread or pastry ovens" [historian: NT]. Britain Express has the same two fireplaces, "one incorporating a bread oven". Time Travel Britain gives one as "13 feet wide" (weak source).
+- **The chapel.**
+  - Three plain pointed lights in the east window, partly restored in the 19th century [historian: Gatehouse].
+  - "decorated with coloured Flemish tiles and divided by a fine screen carved in chalk" [historian: NT].
+  - The oratory above [historian: NT].
+  - A **piscina** survives [historian: Time Travel Britain; weak source].
+  - The altar itself is [silent]; put it under the east window [INVENTED, from normal practice].
+- **The well.**
+  - Stone-lined, about **2.75 m across and 2.5 m deep**, spring-fed, restored [historian: Gatehouse].
+  - NT: "Steps lead down from the kitchen into the south-west tower to a pool."
+  - Britain Express: "about 10 feet deep", "located directly under a dovecot".
+  - A well-house as a separate building: none. It is a room in the tower basement [historian: as above].
+- **Furniture, hangings, colours:** [silent] for Bodiam ("no furnishings", Gatehouse search summary). Fill them from period practice and say so [INVENTED].
+
+### 18d. The rooms in a siege (sourced only)
+
+- **The well.** Vegetius IV.10: "Magna urbis utilitas est, cum perennes fontes murus includit" ("It is a great advantage when the wall encloses perennial springs") [text: Vegetius IV.10]. Bodiam's well is spring-fed (18c).
+- **Stores.** Vegetius IV.8 says to lay in pitch, sulphur and oil "to burn the enemy's engines"; iron and charcoal for making weapons; and timber for spear shafts and arrows [text: Vegetius IV.8]. Bodiam had cellars along the east side and under each corner tower, and storage under the north range [historian: Northwestern; Thackray p. 40]. What they actually held is [silent].
+- **Shelter under bombardment.** At Auberoche the garrison hid in "the vaulted rooms on the ground floor" [text: Froissart (Johnes) ch. CVI; see §6b].
+- **Women carrying stones up to the walls:** Hennebont [text: §2].
+- **The hall used as a barracks:** [silent] in every source read. The garrison had its own living area at Bodiam (Thackray p. 40), not the great hall.
+
+### 18e. Disagreements and gaps
+
+- **Chapel position.**
+  - All the sources read put it at the north end of the east range.
+  - One search summary put it "on the first floor of the north range, above the buttery and pantry" [**relayed**, unknown site]. That conflicts with the plan, so don't use it.
+- **North range: stables or not.** It is disputed (18a).
+- **Not read:**
+  - the Historic England list entry (403);
+  - History Today (403);
+  - Catriona Cooper's Southampton thesis on Bodiam (403);
+  - W. D. Simpson, *SAC* 72 (1931) (a PDF that could not be rendered);
+  - the NT access statement (a PDF that could not be rendered);
+  - Thackray's guidebook, and the 1905 *Archaeological Journal* plan itself;
+  - Goodall, *The English Castle* (2011);
+  - Faulkner, *Archaeological Journal* 120 (1963).
+
+  The first six are online and could be read with a PDF tool. The guidebook, the 1905 plan, Goodall and Faulkner need the books.
+- **Room sizes other than the hall:** not found.
+
+### 18f. Quotations for labels (exact as returned; check against the page)
+
+- "The whole household would have eaten here at communal meals." (National Trust, *Exploring Bodiam Castle*)
+- "a huge roasting hearth in the south wall and a second hearth in the north, inset with bread or pastry ovens" (same)
+- "You could climb the steep spiral staircases to the top of the towers." (same)
+- "Magna urbis utilitas est, cum perennes fontes murus includit." (Vegetius, *Epitoma* IV.10)
+
+### 18g. Links
+- https://en.wikipedia.org/wiki/Bodiam_Castle
+- http://www.gatehouse-gazetteer.info/English%20sites/1081.html
+- https://www.nationaltrust.org.uk/visit/sussex/bodiam-castle/exploring-bodiam-castle
+- https://www.britainexpress.com/counties/eastsussex/castles/bodiam.htm
+- https://www.timetravel-britain.com/articles/castles/bodiam.shtml
+- https://www.earlyoakreproductions.co.uk/news-blog/historic-britain/14th-century-bodium-castle-sussex.php
+- https://en.wikipedia.org/wiki/File:Bodiam_Castle_ground_plan.jpg
+- https://sites.northwestern.edu/medieval-buildings/bodiam
+- https://www.thelatinlibrary.com/vegetius4.html
+- https://en.wikipedia.org/wiki/Conwy_town_walls

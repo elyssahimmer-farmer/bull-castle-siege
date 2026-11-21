@@ -436,6 +436,11 @@
     if (sm > M.bank) return country;
     let h = bankY(sm, M.bank, 0.4, 3.5);
     h = Math.max(h, islandY(x, z, SIEGE.island, 0.9, 2.5), islandY(x, z, SIEGE.apron, 1.2, 2), islandY(x, z, SIEGE.barbIsland, 1.2, 2));
+    // under the north-east tower (inside its masonry and the ranges' corner, where nobody walks and no camera sees)
+    // the island sinks a little, so the tower's basement with its well can lie below the kitchen (castle.js, DESIGN
+    // decision 24); kept above the moat's level, so no water is drawn there
+    const NE = SIEGE.towers.NE, dn = (x - NE[0]) * (x - NE[0]) + (z - NE[1]) * (z - NE[1]);
+    if (dn < 33.6) h = Math.min(h, -0.34);
     return h;
   }
   // the bridge decks' walking surface (null off the decks)
@@ -1402,7 +1407,10 @@
   const LIM = { x: 90, z: 100, yMax: 70 };
   const user = { last: -1e9 };
   const fly = { on: false, x: 0, y: 30, z: 60, yaw: Math.PI, pitch: -0.4 };
-  const eye = { on: false, x: 6, z: 23, yaw: Math.PI, pitch: 0.04 };
+  // y: the floor it stands on (the ground, a room, a stair, the wall-walk); cy: the camera's height, eased; rail: the
+  // newel stair it's climbing (castle.nav.rails), u its height on it, rs which way forward goes (1 up, -1 down)
+  const eye = { on: false, x: 6, z: 23, yaw: Math.PI, pitch: 0.04, y: 0, cy: NaN, ceil: Infinity, rail: null, u: 0, rs: 1, cool: null };
+  ctx.eyeView = eye;
   const held = new Set();
   const nowS = () => performance.now() / 1000;
   // the lowest the camera may fly at (x, z): over the ground and anything a plug-in registers, and over the castle
@@ -1432,7 +1440,20 @@
   }
   // Soldier's eye: may the camera stand at (x, z)? A disc 0.35 m round it must be out of the water and the masonry
   // (the bridge decks are walking surfaces, so the bridges are fine); and nothing a plug-in has roofed over (a tent,
-  // a trebuchet's frame), except in the castle's passages, whose vaults are roofs it walks under.
+  // a trebuchet's frame), except in the castle's passages, whose vaults are roofs it walks under. In and on the castle
+  // (decision 24) it walks castle.js's own map (ctx.castle.nav): the rooms through their doors, the newel stairs, the
+  // wall-walks behind the parapets and the tower tops, each a floor at its own height; a disc 0.22 m round it must be
+  // on floor within a step (STEP) of the floor it's on, so it never walks off a wall top or through a broken one.
+  const STEP = 0.66, EYE_RI = 0.22;
+  function eyeFloor(x, z, y) {
+    const nav = ctx.castle && ctx.castle.nav, near = nav && nav.near(x, z);
+    if (!inMasonry(x, z)) {
+      const s = surfaceY(x, z);
+      if (s >= WATER.level + 0.18 && (!near || Math.abs(s - y) <= STEP)) { eyeFloor.ceil = Infinity; return s; }
+    }
+    if (near) { const h = nav.floorAt(x, z, y); eyeFloor.ceil = nav.ceil; return h; }
+    return NaN;
+  }
   const EYE_R = 0.35, EO = [[0, 0]];
   for (let i = 0; i < 8; i++) EO.push([Math.sin(i * TAU / 8) * EYE_R, Math.cos(i * TAU / 8) * EYE_R]);
   // The castle's doors stop it like a wall while they're shut (castle.js publishes their state on ctx.castle): the
@@ -1451,26 +1472,77 @@
   }
   function eyeOK(x, z, door) {
     if (Math.abs(x) > LIM.x || Math.abs(z) > LIM.z) return false;
+    const f = eyeFloor(x, z, eye.y), ceil = eyeFloor.ceil;
+    if (f !== f) return false;
+    const nav = ctx.castle && ctx.castle.nav, inside = !!(nav && nav.near(x, z)), k = (inside ? EYE_RI : EYE_R) / EYE_R;
     for (const [ox, oz] of EO) {
-      const px = x + ox, pz = z + oz;
-      if (surfaceY(px, pz) < WATER.level + 0.18) return false;
-      if (inMasonry(px, pz)) return false;
-      const D = doorAt(px, pz);
+      const px = x + ox * k, pz = z + oz * k, g = eyeFloor(px, pz, f);
+      if (g !== g || Math.abs(g - f) > STEP) return false;
       // a shut door: only a step away from it is allowed (for someone standing in the doorway as it shut)
+      const D = f < 3 ? doorAt(px, pz) : null;
       if (D && !(door && D === door.D && Math.abs(z - D.z) > door.d)) return false;
     }
-    if (!SIEGE.inPassage(x, z) && camFloor(x, z) > surfaceY(x, z) + 2.2) return false;
+    if (!inside && !SIEGE.inPassage(x, z) && camFloor(x, z) > surfaceY(x, z) + 2.2) return false;
+    eyeOK.f = f; eyeOK.ceil = ceil;
     return true;
+  }
+  // the newel stairs: walking into one's foot (or head) puts the eye on its rail; forward then climbs (or goes down)
+  // the spiral, turning the view along it and, near the end, toward the door it comes out of; no teleport
+  const angD = (a, b) => Math.atan2(Math.sin(b - a), Math.cos(b - a));
+  const railAngle = (R, u) => R.a0 + R.dir * TAU * R.turns * (u - R.y0) / (R.y1 - R.y0);
+  function railLatch() {
+    const nav = ctx.castle && ctx.castle.nav;
+    if (!nav) return;
+    for (const R of nav.rails) {
+      const r = Math.hypot(eye.x - R.cx, eye.z - R.cz);
+      if (eye.cool === R) { if (r > R.R + 0.15 || Math.min(Math.abs(eye.y - R.y0), Math.abs(eye.y - R.y1)) > 1) eye.cool = null; continue; }
+      if (r > 0.75) continue;
+      if (Math.abs(eye.y - R.y0) < 0.45) { eye.rail = R; eye.u = R.y0; eye.rs = 1; eye.ceil = Infinity; return; }
+      if (Math.abs(eye.y - R.y1) < 0.45) { eye.rail = R; eye.u = R.y1; eye.rs = -1; eye.ceil = Infinity; return; }
+    }
+  }
+  function railMove(fwd) {
+    const R = eye.rail;
+    if (!fwd) return;
+    const a = railAngle(R, eye.u), ux = Math.cos(a) * R.dir, uz = -Math.sin(a) * R.dir;   // the way up the stair
+    if (fwd > 0 && (Math.sin(eye.yaw) * ux + Math.cos(eye.yaw) * uz) * eye.rs < -0.35) eye.rs = -eye.rs;   // turned round
+    const du = 0.55 * fwd * eye.rs * (R.y1 - R.y0) / R.len;   // a stair is climbed more slowly than a floor is walked
+    eye.u += du;
+    if (eye.u >= R.y1 || eye.u <= R.y0) {
+      const top = eye.u >= R.y1, ae = top ? R.a1 : R.a0;
+      eye.u = top ? R.y1 : R.y0; eye.y = eye.u; eye.rail = null; eye.cool = R; eye.ceil = Infinity;
+      eye.x = R.cx + Math.sin(ae) * R.rm; eye.z = R.cz + Math.cos(ae) * R.rm;
+      if (fwd > 0) eye.yaw += angD(eye.yaw, ae);
+      return;
+    }
+    const an = railAngle(R, eye.u);
+    eye.x += (R.cx + Math.sin(an) * R.rm - eye.x) * 0.5; eye.z += (R.cz + Math.cos(an) * R.rm - eye.z) * 0.5;
+    eye.y = eye.u;
+    if (fwd > 0) {
+      // along the stair and a little in toward the newel, looking up the steps (down them going down); level again
+      // and toward the door over the last quarter turn
+      const sg = du > 0 ? 1 : -1, left = sg > 0 ? R.y1 - eye.u : eye.u - R.y0, span = (R.y1 - R.y0) / (R.turns * 4), e = left < span ? 1 - left / span : 0;
+      let want = Math.atan2(Math.cos(an) * R.dir * sg - 0.8 * Math.sin(an), -Math.sin(an) * R.dir * sg - 0.8 * Math.cos(an));
+      if (e > 0) want += angD(want, sg > 0 ? R.a1 : R.a0) * e;
+      // turn with the stair as it winds (so the view never lags into the wall), and settle onto the wanted heading
+      const turned = eye.yaw + (an - a);
+      eye.yaw = turned + angD(turned, want) * 0.15;
+      eye.yaw = Math.atan2(Math.sin(eye.yaw), Math.cos(eye.yaw));
+      eye.pitch += ((sg > 0 ? -0.12 : -0.4) * (1 - e) + 0.04 * e - eye.pitch) * 0.08;
+    }
   }
   const eyeDoor = { D: null, d: 0 };
   function eyeMove(fwd, side) {
+    if (eye.rail) { railMove(fwd); return; }
     // forward along where it looks; side is to the right
     const dx = Math.sin(eye.yaw) * fwd - Math.cos(eye.yaw) * side, dz = Math.cos(eye.yaw) * fwd + Math.sin(eye.yaw) * side;
     let door = null;
-    for (const [ox, oz] of EO) { const D = doorAt(eye.x + ox, eye.z + oz); if (D) { eyeDoor.D = D; eyeDoor.d = Math.abs(eye.z - D.z); door = eyeDoor; break; } }
-    if (eyeOK(eye.x + dx, eye.z + dz, door)) { eye.x += dx; eye.z += dz; }
-    else if (eyeOK(eye.x + dx, eye.z, door)) eye.x += dx;   // slide along a wall or the water's edge
-    else if (eyeOK(eye.x, eye.z + dz, door)) eye.z += dz;
+    if (eye.y < 3) for (const [ox, oz] of EO) { const D = doorAt(eye.x + ox, eye.z + oz); if (D) { eyeDoor.D = D; eyeDoor.d = Math.abs(eye.z - D.z); door = eyeDoor; break; } }
+    const go = (x, z) => { if (!eyeOK(x, z, door)) return false; eye.x = x; eye.z = z; eye.y = eyeOK.f; eye.ceil = eyeOK.ceil; return true; };
+    let moved = go(eye.x + dx, eye.z + dz) || go(eye.x + dx, eye.z) || go(eye.x, eye.z + dz);   // slide along a wall or the water's edge
+    // and round a door's jamb: the step turned a little either way (shorter as it turns), so doorways draw it in
+    if (!moved && (dx || dz)) for (const a of [0.35, -0.35, 0.7, -0.7]) { const c = Math.cos(a), s = Math.sin(a); if (go(eye.x + (dx * c - dz * s) * c, eye.z + (dx * s + dz * c) * c)) { moved = true; break; } }
+    if (moved) railLatch();
   }
   // held keys move the camera smoothly each frame
   const KEY = (c) => held.has(c);
@@ -1506,13 +1578,13 @@
     btnEye.classList.toggle('on', eye.on); btnFly.classList.toggle('on', !eye.on);
     if (eye.on) {
       fly.on = false; user.last = nowS();
-      if (!quiet) hint('Drag to look around · arrow keys or WASD to walk · two fingers to walk on a screen');
+      if (!quiet) hint('Drag to look around · arrow keys or WASD to walk · two fingers to walk on a screen · in the castle, walk in at the doors and up the spiral stairs onto the walls');
     } else if (quiet) {
       fly.on = false;   // back to the automatic view
     } else {
       // fly up over where the soldier's eye was (or carry on from the view on screen), then steer from there
       if (wasEye) {
-        fly.x = eye.x - Math.sin(eye.yaw) * 22; fly.z = eye.z - Math.cos(eye.yaw) * 22; fly.y = surfaceY(eye.x, eye.z) + 20;
+        fly.x = eye.x - Math.sin(eye.yaw) * 22; fly.z = eye.z - Math.cos(eye.yaw) * 22; fly.y = Math.max(surfaceY(eye.x, eye.z), eye.y) + 20;
         fly.yaw = eye.yaw; fly.pitch = -0.6; fly.on = true;
         flyMove(0, 0, 0);
         user.last = nowS();
@@ -1522,9 +1594,11 @@
   }
   btnFly.addEventListener('click', () => setView('fly'));
   btnEye.addEventListener('click', () => setView('eye'));
-  // ?view=eye starts in Soldier's eye (?eye=x,z,yawDegrees picks the spot; yaw 180 faces north), for checking
+  // ?view=eye starts in Soldier's eye (?eye=x,z,yawDegrees[,floor] picks the spot; yaw 180 faces north; floor: the
+  // height it stands on, e.g. 10 on the wall-walk, 14 on a tower top; else the ground there), for checking
+  eye.y = surfaceY(eye.x, eye.z);
   if (params.get('view') === 'eye') {
-    if (params.has('eye')) { const [ex, ez, ey] = params.get('eye').split(',').map(Number); eye.x = ex; eye.z = ez; if (!isNaN(ey)) eye.yaw = ey * Math.PI / 180; }
+    if (params.has('eye')) { const [ex, ez, ey, efl] = params.get('eye').split(',').map(Number); eye.x = ex; eye.z = ez; if (!isNaN(ey)) eye.yaw = ey * Math.PI / 180; eye.y = !isNaN(efl) ? efl : surfaceY(ex, ez); }
     eye.on = true; user.last = 1e12; btnEye.classList.add('on'); btnFly.classList.remove('on');
   }
   if (CAM || TOUR || params.has('capture') || params.get('buttons') === '0') document.getElementById('views').style.display = 'none';
@@ -1551,7 +1625,11 @@
     if (eye.on) {
       if (idle > IDLE) setView('fly', true);
       else {
-        camPos.set(eye.x, surfaceY(eye.x, eye.z) + 1.7, eye.z);
+        // 1.7 m over its floor, ducking under a low lintel; eased, so steps and stairs don't jolt
+        const wantY = Math.min(eye.y + 1.7, eye.ceil - 0.2);
+        if (!(eye.cy === eye.cy) || Math.abs(wantY - eye.cy) > 3) eye.cy = wantY;
+        eye.cy += (wantY - eye.cy) * Math.min(1, dt * 12);
+        camPos.set(eye.x, eye.cy, eye.z);
         camLook.set(eye.x + Math.sin(eye.yaw) * Math.cos(eye.pitch) * 10, camPos.y + Math.sin(eye.pitch) * 10, eye.z + Math.cos(eye.yaw) * Math.cos(eye.pitch) * 10);
       }
     } else if (fly.on) {
@@ -1567,7 +1645,10 @@
     const bk = (nowS() - viewBlend.t0) / 1.6;
     if (bk < 1) { const e2 = easeInOut(clamp01(bk)); camPos.lerpVectors(viewBlend.pos, camPos, e2); camLook.lerpVectors(viewBlend.look, camLook, e2); }
     // a wider lens at a soldier's height, eased with the glide
-    const wantFov = eye.on ? 62 : 40;
+    // (a nearer near plane on foot, so walls a stride away and narrow stairs don't clip)
+    const wantNear = eye.on ? 0.12 : 0.5;
+    if (camera.near !== wantNear) { camera.near = wantNear; camera.updateProjectionMatrix(); }
+    const wantFov = eye.on ? (eye.rail ? 80 : 62) : 40;   // wider still in a stair's narrow well
     if (Math.abs(camera.fov - wantFov) > 0.05) { camera.fov += (wantFov - camera.fov) * 0.08; if (Math.abs(camera.fov - wantFov) <= 0.05) camera.fov = wantFov; resize(); }
     camera.position.copy(camPos);
     camera.lookAt(camLook);
